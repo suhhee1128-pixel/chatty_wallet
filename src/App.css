@@ -1,0 +1,85 @@
+.app-container {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+}
+
+.phone-frame {
+  width: 375px;
+  height: 812px;
+  background: #ffffff;
+  border-radius: 40px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.phone-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.phone-content::-webkit-scrollbar {
+  display: none;
+}
+
+.card-placeholder {
+  background: linear-gradient(135deg, #f6f8fb 0%, #ffffff 100%);
+  border: 2px dashed #e5e7eb;
+  border-radius: 16px;
+  transition: all 0.3s ease;
+}
+
+.card-placeholder:hover {
+  border-color: #d1d5db;
+  transform: translateY(-2px);
+}
+
+.btn-primary {
+  background: #000000;
+  color: #ffffff;
+  transition: all 0.3s ease;
+}
+
+.btn-primary:hover {
+  background: #1f2937;
+  transform: scale(1.02);
+}
+
+.btn-outline {
+  background: #ffffff;
+  color: #000000;
+  border: 2px solid #000000;
+  transition: all 0.3s ease;
+}
+
+.btn-outline:hover {
+  background: #f9fafb;
+  transform: scale(1.02);
+}
+
+.transaction-item {
+  transition: all 0.2s ease;
+}
+
+.transaction-item:hover {
+  background: #f9fafb;
+  transform: translateX(4px);
+}
+
+.amount-red {
+  color: #ef4444;
+}
+
+.amount-green {
+  color: #10b981;
+}
+
