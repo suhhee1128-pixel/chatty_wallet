@@ -16,7 +16,15 @@ AI 기반 대화형 금융 관리 앱입니다. 5명의 독특한 캐릭터가 �
 npm install
 ```
 
-### 2. 개발 서버 실행
+### 2. Gemini API 키 설정
+1. [Google AI Studio](https://makersuite.google.com/app/apikey)에서 API 키를 발급받으세요
+2. 프로젝트 루트에 `.env` 파일을 생성하고 다음 내용을 추가하세요:
+```bash
+REACT_APP_GEMINI_API_KEY=your_actual_api_key_here
+```
+(실제 발급받은 API 키로 `your_actual_api_key_here`를 교체하세요)
+
+### 3. 개발 서버 실행
 ```bash
 npm start
 ```

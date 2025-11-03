@@ -1,14 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 
-const GEMINI_API_KEY = 'AIzaSyB9FnCBKH7zQf2cWwONvEzD4S3herMziPw';
-const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`;
+const GEMINI_API_KEY = process.env.REACT_APP_GEMINI_API_KEY || '';
+const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 
-function ChatPage() {
+function ChatPage({ transactions }) {
   const [messages, setMessages] = useState([
     {
       id: 1,
       type: 'catty',
-      text: "Hey there! I'm Catty, your AI finance friend! 😺 I'm here to help you manage your spending and build healthy money habits. How can I help you today?",
+      text: "Hey there! 👋 I'm Catty, your AI finance buddy! 🐰 I'm here to help you make smart spending decisions. Ask me anything about your wallet - should you buy that coffee? Is your budget looking good? I've got your back! 💰",
       time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
     }
   ]);
@@ -30,6 +30,45 @@ function ChatPage() {
 
   const sendMessageToGemini = async (userMessage) => {
     try {
+      // Calculate summary statistics from transactions
+      const expenses = transactions.filter(t => t.type === 'expense');
+      const incomes = transactions.filter(t => t.type === 'income');
+      const totalExpenses = expenses.reduce((sum, t) => sum + Math.abs(t.amount), 0);
+      const totalIncomes = incomes.reduce((sum, t) => sum + t.amount, 0);
+      const balance = totalIncomes - totalExpenses;
+      
+      // Group by category
+      const expensesByCategory = expenses.reduce((acc, t) => {
+        const cat = t.category || 'other';
+        acc[cat] = (acc[cat] || 0) + Math.abs(t.amount);
+        return acc;
+      }, {});
+      
+      // Count purchases by item/description
+      const itemCounts = expenses.reduce((acc, t) => {
+        const desc = t.description.toLowerCase();
+        acc[desc] = (acc[desc] || 0) + 1;
+        return acc;
+      }, {});
+      
+      // Recent transactions (last 10 for better context)
+      const recentTransactions = transactions.slice(0, 10);
+      
+      const spendingContext = {
+        totalBalance: balance,
+        totalExpenses,
+        totalIncomes,
+        expensesByCategory,
+        itemCounts,
+        recentTransactions: recentTransactions.map(t => ({
+          description: t.description,
+          amount: t.amount,
+          type: t.type,
+          category: t.category,
+          date: t.date || 'no date'
+        }))
+      };
+      
       const response = await fetch(GEMINI_API_URL, {
         method: 'POST',
         headers: {
@@ -38,7 +77,36 @@ function ChatPage() {
         body: JSON.stringify({
           contents: [{
             parts: [{
-              text: `You are Catty, a friendly and empathetic AI finance assistant. Your role is to help users manage their spending through supportive conversations. Be warm, understanding, and provide practical financial advice. Keep responses concise and friendly. User message: ${userMessage}`
+              text: `You are Catty, a friendly but honest AI finance buddy 🐰
+
+Your style:
+- Short, direct responses. No fluff.
+- Friendly but straight to the point
+- Check the spending data and be real about it
+- Use 1-2 emojis max. Keep it brief.
+- Respond in the SAME language as the user (Korean or English)
+- If Korean, always use polite ~요 ending, never ~다 or ~어
+
+Current spending:
+- Balance: $${balance.toFixed(2)}
+- By category: ${JSON.stringify(expensesByCategory, null, 2)}
+- Item counts: ${JSON.stringify(spendingContext.itemCounts, null, 2)}
+- Recent transactions: ${JSON.stringify(spendingContext.recentTransactions, null, 2)}
+
+When asked "should I buy X?":
+- Check the recent transactions list FIRST with dates!
+- Use dates naturally: "You bought coffee today" or "You got shopping on 10/31 already"
+- Count recent purchases: "That's your 3rd coffee this week" 
+- Reference specific spending: "You spent $160 on shopping already this month"
+- Vary your responses! Don't repeat the same format every time.
+- Sometimes mention balance, sometimes focus on frequency, sometimes talk about categories.
+- Mix it up: "Maybe next time 😅", "You're good to go! Just don't go crazy 💸", "Nah, you bought enough today 🛑"
+- Be specific about their actual behavior. Don't just say "your balance is low"
+- Overspending? Stop them with concrete examples from their recent history.
+- Reasonable? Encourage but add a small reminder about moderation.
+- Keep responses under 3 sentences and sound natural!
+
+User message: ${userMessage}`
             }]
           }]
         })
