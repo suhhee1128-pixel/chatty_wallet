@@ -25,6 +25,7 @@
   overflow-x: hidden;
   -ms-overflow-style: none;
   scrollbar-width: none;
+  position: relative;
 }
 
 .phone-content::-webkit-scrollbar {
