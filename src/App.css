@@ -11,7 +11,7 @@
   width: 375px;
   height: 812px;
   background: #ffffff;
-  border-radius: 40px;
+  border-radius: 47px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
   overflow: hidden;
   position: relative;
@@ -35,7 +35,7 @@
 .card-placeholder {
   background: linear-gradient(135deg, #f6f8fb 0%, #ffffff 100%);
   border: 2px dashed #e5e7eb;
-  border-radius: 16px;
+  border-radius: 8px;
   transition: all 0.3s ease;
 }
 
@@ -45,25 +45,25 @@
 }
 
 .btn-primary {
-  background: #000000;
-  color: #ffffff;
+  background: #FFF6F7;
+  color: #000000;
   transition: all 0.3s ease;
 }
 
 .btn-primary:hover {
-  background: #1f2937;
+  background: #FFE8F0;
   transform: scale(1.02);
 }
 
 .btn-outline {
-  background: #ffffff;
+  background: #FFF6F7;
   color: #000000;
-  border: 2px solid #000000;
+  border: 2px solid #FFE8F0;
   transition: all 0.3s ease;
 }
 
 .btn-outline:hover {
-  background: #f9fafb;
+  background: #FFE8F0;
   transform: scale(1.02);
 }
 
@@ -76,11 +76,39 @@
   transform: translateX(4px);
 }
 
+.transaction-card {
+  transition: all 0.2s ease;
+}
+
+.transaction-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
 .amount-red {
-  color: #ef4444;
+  color: #F35DC8;
 }
 
 .amount-green {
-  color: #10b981;
+  color: #A4F982;
+}
+
+/* Income/Expense Button Styles */
+.income-button {
+  transition: all 0.3s ease;
+}
+
+.income-button:hover {
+  background: #8FE667 !important;
+  transform: scale(1.02);
+}
+
+.expense-button {
+  transition: all 0.3s ease;
+}
+
+.expense-button:hover {
+  background: #E040B5 !important;
+  transform: scale(1.02);
 }
 

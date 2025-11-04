@@ -3,15 +3,28 @@ import React, { useState, useRef, useEffect } from 'react';
 const GEMINI_API_KEY = process.env.REACT_APP_GEMINI_API_KEY || '';
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 
+const STORAGE_KEY = 'chatty_wallet_messages';
+const INITIAL_MESSAGE = {
+  id: 1,
+  type: 'catty',
+  text: "Hey! I'm Catty from Geoji-bang 😺 Got something you want to buy? Tell me. I'll help you put out that burning wallet. Nicely, of course~ 💸",
+  time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+};
+
 function ChatPage({ transactions }) {
-  const [messages, setMessages] = useState([
-    {
-      id: 1,
-      type: 'catty',
-      text: "Hey there! 👋 I'm Catty, your AI finance buddy! 🐰 I'm here to help you make smart spending decisions. Ask me anything about your wallet - should you buy that coffee? Is your budget looking good? I've got your back! 💰",
-      time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+  const [messages, setMessages] = useState(() => {
+    // Load messages from localStorage on mount
+    const savedMessages = localStorage.getItem(STORAGE_KEY);
+    if (savedMessages) {
+      try {
+        return JSON.parse(savedMessages);
+      } catch (e) {
+        console.error('Failed to parse saved messages:', e);
+        return [INITIAL_MESSAGE];
+      }
     }
-  ]);
+    return [INITIAL_MESSAGE];
+  });
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef(null);
@@ -19,6 +32,11 @@ function ChatPage({ transactions }) {
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
+
+  // Save messages to localStorage whenever messages change
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+  }, [messages]);
 
   useEffect(() => {
     scrollToBottom();
@@ -30,6 +48,9 @@ function ChatPage({ transactions }) {
 
   const sendMessageToGemini = async (userMessage) => {
     try {
+      // Debug: Check if API key is loaded
+      console.log('API Key loaded:', GEMINI_API_KEY ? 'Yes' : 'No');
+      
       // Calculate summary statistics from transactions
       const expenses = transactions.filter(t => t.type === 'expense');
       const incomes = transactions.filter(t => t.type === 'income');
@@ -77,34 +98,61 @@ function ChatPage({ transactions }) {
         body: JSON.stringify({
           contents: [{
             parts: [{
-              text: `You are Catty, a friendly but honest AI finance buddy 🐰
+              text: `You are Catty from "Geoji-bang" (거지방), a humorous chatroom where everyone jokingly tries to stop each other from spending money.
 
-Your style:
-- Short, direct responses. No fluff.
-- Friendly but straight to the point
-- Check the spending data and be real about it
-- Use 1-2 emojis max. Keep it brief.
-- Respond in the SAME language as the user (Korean or English)
-- If Korean, always use polite ~요 ending, never ~다 or ~어
+💸 Your personality:
+- Sarcastic but caring - like a brutally honest broke friend
+- Always encourages saving, NEVER spending
+- Uses creative, exaggerated humor to make them laugh instead of buy
+- Speaks like a close friend, not a formal advisor
+- VERY SHORT responses (1-2 sentences max, be concise!)
+- Never sound too serious or moralizing
+- Mix truth + wit + absurd imagery
+- Use emoji sparingly, only if it enhances humor
 
-Current spending:
+Current spending data:
 - Balance: $${balance.toFixed(2)}
-- By category: ${JSON.stringify(expensesByCategory, null, 2)}
-- Item counts: ${JSON.stringify(spendingContext.itemCounts, null, 2)}
-- Recent transactions: ${JSON.stringify(spendingContext.recentTransactions, null, 2)}
+- Total expenses: $${totalExpenses.toFixed(2)}
+- Expenses by category: ${JSON.stringify(expensesByCategory, null, 2)}
+- Recent transactions: ${JSON.stringify(spendingContext.recentTransactions.slice(0, 5), null, 2)}
 
-When asked "should I buy X?":
-- Check the recent transactions list FIRST with dates!
-- Use dates naturally: "You bought coffee today" or "You got shopping on 10/31 already"
-- Count recent purchases: "That's your 3rd coffee this week" 
-- Reference specific spending: "You spent $160 on shopping already this month"
-- Vary your responses! Don't repeat the same format every time.
-- Sometimes mention balance, sometimes focus on frequency, sometimes talk about categories.
-- Mix it up: "Maybe next time 😅", "You're good to go! Just don't go crazy 💸", "Nah, you bought enough today 🛑"
-- Be specific about their actual behavior. Don't just say "your balance is low"
-- Overspending? Stop them with concrete examples from their recent history.
-- Reasonable? Encourage but add a small reminder about moderation.
-- Keep responses under 3 sentences and sound natural!
+💬 Response style:
+- CRITICAL: Respond in the SAME language as the user's message
+- Keep it SHORT and punchy (1-2 sentences max)
+- If user writes in Korean, respond in Korean (use casual ~어/~야 endings, like a friend)
+- If user writes in English, respond in English (casual, friendly tone)
+- If they want to buy something, STOP THEM with humor
+- Reference actual spending briefly when relevant
+- Use absurd alternatives that match the user's language
+- Be creative and funny, not mean
+- Never praise spending or justify purchases
+- Don't give generic financial advice
+
+Example responses (English - keep them SHORT):
+User: "I want to buy ice cream"
+You: "Freeze your feelings, not your wallet. 🧊"
+
+User: "Should I buy a new lipstick?"
+You: "Bite your lips. Free red shade. 💋"
+
+User: "I want to get coffee"
+You: "Tap water + imagination = iced Americano. Zero dollars."
+
+User: "I'm thinking of buying summer clothes"
+You: "Cut sleeves off old ones. Done."
+
+Example responses (Korean - 짧게 유지):
+User: "아이스크림 사고 싶어"
+You: "지갑 말고 감정 얼려 🧊"
+
+User: "립스틱 살까?"
+You: "입술 깨물어. 무료 빨간색 💋"
+
+User: "커피 마시고 싶어"
+You: "수돗물 + 상상력 = 아이스 아메. 제로 원."
+
+User: "여름 옷 사고 싶어"
+You: "옛날 옷 소매 자르면 끝."
 
 User message: ${userMessage}`
             }]
@@ -113,15 +161,20 @@ User message: ${userMessage}`
       });
 
       const data = await response.json();
+      console.log('Gemini API response:', data); // Debug log
       
-      if (data.candidates && data.candidates[0] && data.candidates[0].content) {
+      if (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) {
         return data.candidates[0].content.parts[0].text;
+      } else if (data.error) {
+        console.error('Gemini API error:', data.error);
+        return "Can't connect right now. Try again! 😿";
       } else {
-        throw new Error('Invalid response from Gemini API');
+        console.error('Unexpected response format:', data);
+        return "Can't connect right now. Try again! 😿";
       }
     } catch (error) {
       console.error('Error calling Gemini API:', error);
-      return "I'm having trouble connecting right now. Please try again! 😿";
+      return "Can't connect right now. Try again! 😿";
     }
   };
 
@@ -168,8 +221,8 @@ User message: ${userMessage}`
             <span className="text-2xl">😺</span>
           </div>
           <div>
-            <h2 className="text-xl font-medium text-black">Catty</h2>
-            <p className="text-sm text-black opacity-60">Your Finance Friend</p>
+            <h2 className="text-xl font-medium text-black">Cattyy</h2>
+            <p className="text-sm text-black opacity-60">Your brutally honest broke friend</p>
           </div>
         </div>
       </div>
@@ -207,7 +260,7 @@ User message: ${userMessage}`
             </div>
             <div className="flex-1">
               <div className="bg-gray-100 rounded-3xl rounded-tl-md p-4 inline-block">
-                <p className="text-black text-base">Typing...</p>
+                <p className="text-black text-base">Thinking...</p>
               </div>
             </div>
           </div>
@@ -220,7 +273,7 @@ User message: ${userMessage}`
         <div className="flex gap-3 items-center">
           <input 
             type="text" 
-            placeholder="Type a message..." 
+            placeholder="What do you want to buy?" 
             value={inputMessage}
             onChange={(e) => setInputMessage(e.target.value)}
             onKeyPress={handleKeyPress}
@@ -243,4 +296,3 @@ User message: ${userMessage}`
 }
 
 export default ChatPage;
-

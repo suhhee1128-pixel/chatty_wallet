@@ -4,6 +4,7 @@ import ChatPage from './components/ChatPage';
 import AnalyticsPage from './components/AnalyticsPage';
 import ProfilePage from './components/ProfilePage';
 import NavigationBar from './components/NavigationBar';
+import StatusBar from './components/StatusBar';
 import './App.css';
 
 function App() {
@@ -38,6 +39,7 @@ function App() {
   return (
     <div className="app-container">
       <div className="phone-frame">
+        <StatusBar />
         <div className="phone-content">
           {renderPage()}
         </div>
