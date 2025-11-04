@@ -1,4 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useAuth } from '../contexts/AuthContext';
+import { supabase } from '../lib/supabase';
 
 const GEMINI_API_KEY = process.env.REACT_APP_GEMINI_API_KEY || '';
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
@@ -12,19 +14,9 @@ const INITIAL_MESSAGE = {
 };
 
 function ChatPage({ transactions }) {
-  const [messages, setMessages] = useState(() => {
-    // Load messages from localStorage on mount
-    const savedMessages = localStorage.getItem(STORAGE_KEY);
-    if (savedMessages) {
-      try {
-        return JSON.parse(savedMessages);
-      } catch (e) {
-        console.error('Failed to parse saved messages:', e);
-        return [INITIAL_MESSAGE];
-      }
-    }
-    return [INITIAL_MESSAGE];
-  });
+  const { user } = useAuth();
+  const [messages, setMessages] = useState([INITIAL_MESSAGE]);
+  const [loadingMessages, setLoadingMessages] = useState(true);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef(null);
@@ -33,10 +25,143 @@ function ChatPage({ transactions }) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  // Save messages to localStorage whenever messages change
+  // Load messages from Supabase on mount
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
-  }, [messages]);
+    if (user) {
+      loadMessages();
+      migrateLocalMessagesToSupabase();
+    } else {
+      // If not logged in, use localStorage
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          setMessages(JSON.parse(saved));
+        } catch (e) {
+          console.error('Failed to parse saved messages:', e);
+          setMessages([INITIAL_MESSAGE]);
+        }
+      }
+      setLoadingMessages(false);
+    }
+  }, [user]);
+
+  const loadMessages = async () => {
+    if (!user) return;
+
+    setLoadingMessages(true);
+    try {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('message_id', { ascending: true });
+
+      if (error) throw error;
+
+      if (data && data.length > 0) {
+        const formattedMessages = data.map(m => ({
+          id: m.message_id,
+          type: m.type,
+          text: m.text,
+          time: m.time
+        }));
+        setMessages(formattedMessages);
+      } else {
+        setMessages([INITIAL_MESSAGE]);
+      }
+    } catch (error) {
+      console.error('Error loading messages:', error);
+      setMessages([INITIAL_MESSAGE]);
+    } finally {
+      setLoadingMessages(false);
+    }
+  };
+
+  const migrateLocalMessagesToSupabase = async () => {
+    if (!user) return;
+
+    try {
+      // Check if user already has messages in Supabase
+      const { data: existingData } = await supabase
+        .from('messages')
+        .select('id')
+        .eq('user_id', user.id)
+        .limit(1);
+
+      // If no data exists, migrate from localStorage
+      if (!existingData || existingData.length === 0) {
+        const localMessages = localStorage.getItem(STORAGE_KEY);
+        if (localMessages) {
+          const parsed = JSON.parse(localMessages);
+          if (parsed && parsed.length > 0) {
+            const messagesToInsert = parsed.map((msg, index) => ({
+              user_id: user.id,
+              message_id: msg.id || index + 1,
+              type: msg.type,
+              text: msg.text,
+              time: msg.time
+            }));
+
+            const { error } = await supabase
+              .from('messages')
+              .insert(messagesToInsert);
+
+            if (!error) {
+              localStorage.removeItem(STORAGE_KEY);
+              loadMessages();
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error migrating messages:', error);
+    }
+  };
+
+  // Save messages to Supabase whenever messages change
+  useEffect(() => {
+    if (user && messages.length > 0 && !loadingMessages) {
+      // Only save new messages, not on initial load
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage && lastMessage.id !== 1) { // Skip initial message
+        saveMessageToSupabase(lastMessage);
+      }
+    } else if (!user) {
+      // Fallback to localStorage if not logged in
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+    }
+  }, [messages, user, loadingMessages]);
+
+  const saveMessageToSupabase = async (message) => {
+    if (!user) return;
+
+    try {
+      // Check if message already exists
+      const { data: existing } = await supabase
+        .from('messages')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('message_id', message.id)
+        .maybeSingle();
+
+      if (!existing) {
+        // New message - insert to Supabase
+        const { error } = await supabase
+          .from('messages')
+          .insert({
+            user_id: user.id,
+            message_id: message.id,
+            type: message.type,
+            text: message.text,
+            time: message.time
+          });
+
+        if (error) throw error;
+      }
+    } catch (error) {
+      console.error('Error saving message:', error);
+    }
+  };
 
   useEffect(() => {
     scrollToBottom();
@@ -72,22 +197,88 @@ function ChatPage({ transactions }) {
         return acc;
       }, {});
       
-      // Recent transactions (last 10 for better context)
-      const recentTransactions = transactions.slice(0, 10);
+      // Group by mood
+      const expensesByMood = expenses.reduce((acc, t) => {
+        if (t.mood) {
+          acc[t.mood] = (acc[t.mood] || 0) + Math.abs(t.amount);
+        }
+        return acc;
+      }, {});
+      
+      // Recent transactions with all details (last 15 for better context)
+      const recentTransactions = transactions.slice(0, 15).map(t => ({
+        date: t.date || 'no date',
+        time: t.time || 'no time',
+        description: t.description,
+        amount: Math.abs(t.amount),
+        type: t.type,
+        category: t.category || 'none',
+        mood: t.mood || 'none'
+      }));
+      
+      // Calculate Analytics data (matching AnalyticsPage logic)
+      // Get target and period from localStorage (set by AnalyticsPage)
+      const savedTarget = localStorage.getItem('chatty_wallet_target');
+      const savedPeriod = localStorage.getItem('chatty_wallet_period');
+      const target = savedTarget ? parseFloat(savedTarget) : 5000; // Default 5000
+      const period = savedPeriod || 'month'; // Default month
+      
+      const periodConfig = {
+        week: { days: 7, label: '1 Week' },
+        '2weeks': { days: 14, label: '2 Weeks' },
+        '3weeks': { days: 21, label: '3 Weeks' },
+        month: { days: 30, label: '1 Month' }
+      };
+      const daysInPeriod = periodConfig[period]?.days || 30;
+      const spendingPercentage = target > 0 ? Math.round((totalExpenses / target) * 100) : 0;
+      const saved = Math.max(0, target - totalExpenses);
+      const dailyGoal = Math.round(target / daysInPeriod);
+      
+      // Group expenses by day for trend analysis
+      const expensesByDay = {};
+      expenses.forEach(expense => {
+        if (expense.date) {
+          const dayMatch = expense.date.match(/\d+/);
+          if (dayMatch) {
+            const day = parseInt(dayMatch[0]);
+            if (!expensesByDay[day]) {
+              expensesByDay[day] = 0;
+            }
+            expensesByDay[day] += Math.abs(expense.amount);
+          }
+        }
+      });
       
       const spendingContext = {
+        // Spending Summary
         totalBalance: balance,
         totalExpenses,
         totalIncomes,
         expensesByCategory,
+        expensesByMood,
         itemCounts,
-        recentTransactions: recentTransactions.map(t => ({
+        
+        // Detailed Spending Data
+        allTransactions: transactions.map(t => ({
+          date: t.date || 'no date',
+          time: t.time || 'no time',
           description: t.description,
-          amount: t.amount,
+          amount: Math.abs(t.amount),
           type: t.type,
-          category: t.category,
-          date: t.date || 'no date'
-        }))
+          category: t.category || 'none',
+          mood: t.mood || 'none'
+        })),
+        recentTransactions,
+        expensesByDay,
+        
+        // Analytics Data
+        target,
+        period,
+        daysInPeriod,
+        spendingPercentage,
+        saved,
+        dailyGoal,
+        currentSpendingStatus: spendingPercentage <= 60 ? 'good' : spendingPercentage <= 80 ? 'warning' : 'critical'
       };
       
       const response = await fetch(GEMINI_API_URL, {
@@ -110,49 +301,68 @@ function ChatPage({ transactions }) {
 - Mix truth + wit + absurd imagery
 - Use emoji sparingly, only if it enhances humor
 
-Current spending data:
-- Balance: $${balance.toFixed(2)}
-- Total expenses: $${totalExpenses.toFixed(2)}
-- Expenses by category: ${JSON.stringify(expensesByCategory, null, 2)}
-- Recent transactions: ${JSON.stringify(spendingContext.recentTransactions.slice(0, 5), null, 2)}
+📊 COMPLETE SPENDING & ANALYTICS DATA:
 
-💬 Response style:
+**Spending Summary:**
+- Total Balance: $${balance.toFixed(2)}
+- Total Expenses: $${totalExpenses.toFixed(2)}
+- Total Income: $${totalIncomes.toFixed(2)}
+- Expenses by Category: ${JSON.stringify(expensesByCategory, null, 2)}
+- Expenses by Mood: ${JSON.stringify(expensesByMood, null, 2)}
+- Item Purchase Counts: ${JSON.stringify(itemCounts, null, 2)}
+
+**Detailed Spending History (All Transactions):**
+${JSON.stringify(spendingContext.allTransactions, null, 2)}
+
+**Recent Transactions (Last 15):**
+${JSON.stringify(spendingContext.recentTransactions, null, 2)}
+
+**Daily Spending Pattern:**
+${JSON.stringify(spendingContext.expensesByDay, null, 2)}
+
+**Analytics & Goals:**
+- Target Amount: $${target}
+- Current Period: ${period} (${daysInPeriod} days)
+- Spending Percentage: ${spendingPercentage}% of target
+- Amount Spent: $${totalExpenses.toFixed(2)}
+- Amount Left: $${saved.toFixed(2)}
+- Daily Goal: $${dailyGoal}
+- Current Status: ${spendingContext.currentSpendingStatus} (${spendingPercentage <= 60 ? 'Good - spending under control' : spendingPercentage <= 80 ? 'Warning - getting close to limit' : 'Critical - spending too much!'})
+
+💬 Response Guidelines:
 - CRITICAL: Respond in the SAME language as the user's message
 - Keep it SHORT and punchy (1-2 sentences max)
 - If user writes in Korean, respond in Korean (use casual ~어/~야 endings, like a friend)
 - If user writes in English, respond in English (casual, friendly tone)
 - If they want to buy something, STOP THEM with humor
-- Reference actual spending briefly when relevant
+
+🎯 IMPORTANT: Use the spending data strategically:
+- Reference specific items they bought (e.g., "You already bought coffee 5 times this week!")
+- Mention categories they overspend in (e.g., "Your shopping category is crying for help")
+- Use spending percentage to create urgency (e.g., if >80%: "You're at ${spendingPercentage}%! One more purchase and you're broke!")
+- Reference dates and patterns (e.g., "You spent $${Object.values(spendingContext.expensesByDay)[0]?.toFixed(2) || '0'} on day ${Object.keys(spendingContext.expensesByDay)[0] || '1'} - that's ${((Object.values(spendingContext.expensesByDay)[0] || 0) / dailyGoal * 100).toFixed(0)}% of your daily goal!")
+- Use mood data to empathize (e.g., if they felt sad about previous purchases, remind them)
+- Compare current spending to daily goal (e.g., "Your daily goal is $${dailyGoal}, but you're already at $${(totalExpenses / daysInPeriod).toFixed(2)} per day on average")
+
 - Use absurd alternatives that match the user's language
 - Be creative and funny, not mean
 - Never praise spending or justify purchases
 - Don't give generic financial advice
+- Reference actual numbers from their data when relevant
 
 Example responses (English - keep them SHORT):
 User: "I want to buy ice cream"
-You: "Freeze your feelings, not your wallet. 🧊"
+You: "You've already spent $${totalExpenses.toFixed(2)} (${spendingPercentage}% of your $${target} goal). Freeze your feelings, not your wallet. 🧊"
 
-User: "Should I buy a new lipstick?"
-You: "Bite your lips. Free red shade. 💋"
-
-User: "I want to get coffee"
-You: "Tap water + imagination = iced Americano. Zero dollars."
-
-User: "I'm thinking of buying summer clothes"
-You: "Cut sleeves off old ones. Done."
+User: "Should I buy coffee?"
+You: "You bought coffee ${itemCounts['coffee'] || 0} times already. Tap water + imagination = iced Americano. Zero dollars."
 
 Example responses (Korean - 짧게 유지):
 User: "아이스크림 사고 싶어"
-You: "지갑 말고 감정 얼려 🧊"
-
-User: "립스틱 살까?"
-You: "입술 깨물어. 무료 빨간색 💋"
+You: "이미 ${spendingPercentage}% 썼어. 지갑 말고 감정 얼려 🧊"
 
 User: "커피 마시고 싶어"
-You: "수돗물 + 상상력 = 아이스 아메. 제로 원."
-
-User: "여름 옷 사고 싶어"
-You: "옛날 옷 소매 자르면 끝."
+You: "커피를 이미 ${itemCounts['coffee'] || 0}번 샀어. 수돗물 + 상상력 = 아이스 아메. 제로 원."
 
 User message: ${userMessage}`
             }]
@@ -179,7 +389,7 @@ User message: ${userMessage}`
   };
 
   const handleSendMessage = async () => {
-    if (!inputMessage.trim() || isLoading) return;
+    if (!inputMessage.trim() || isLoading || loadingMessages) return;
 
     const userMessage = {
       id: messages.length + 1,
@@ -229,43 +439,51 @@ User message: ${userMessage}`
       
       {/* Chat Messages */}
       <div className="flex-1 p-6 space-y-4 overflow-y-auto">
-        {messages.map((message) => (
-          message.type === 'catty' ? (
-            <div key={message.id} className="flex gap-3">
-              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-400 to-pink-400 flex items-center justify-center flex-shrink-0">
-                <span className="text-lg">😺</span>
-              </div>
-              <div className="flex-1">
-                <div className="bg-gray-100 rounded-3xl rounded-tl-md p-4 inline-block max-w-xs">
-                  <p className="text-black text-base">{message.text}</p>
-                </div>
-                <p className="text-xs text-black opacity-40 mt-1 ml-2">{message.time}</p>
-              </div>
-            </div>
-          ) : (
-            <div key={message.id} className="flex gap-3 justify-end">
-              <div className="flex-1 text-right">
-                <div className="bg-black rounded-3xl rounded-tr-md p-4 inline-block max-w-xs">
-                  <p className="text-white text-base">{message.text}</p>
-                </div>
-                <p className="text-xs text-black opacity-40 mt-1 mr-2">{message.time}</p>
-              </div>
-            </div>
-          )
-        ))}
-        {isLoading && (
-          <div className="flex gap-3">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-400 to-pink-400 flex items-center justify-center flex-shrink-0">
-              <span className="text-lg">😺</span>
-            </div>
-            <div className="flex-1">
-              <div className="bg-gray-100 rounded-3xl rounded-tl-md p-4 inline-block">
-                <p className="text-black text-base">Thinking...</p>
-              </div>
-            </div>
+        {loadingMessages ? (
+          <div className="flex items-center justify-center h-full">
+            <p className="text-gray-600">Loading messages...</p>
           </div>
+        ) : (
+          <>
+            {messages.map((message) => (
+              message.type === 'catty' ? (
+                <div key={message.id} className="flex gap-3">
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-400 to-pink-400 flex items-center justify-center flex-shrink-0">
+                    <span className="text-lg">😺</span>
+                  </div>
+                  <div className="flex-1">
+                    <div className="bg-gray-100 rounded-3xl rounded-tl-md p-4 inline-block max-w-xs">
+                      <p className="text-black text-base">{message.text}</p>
+                    </div>
+                    <p className="text-xs text-black opacity-40 mt-1 ml-2">{message.time}</p>
+                  </div>
+                </div>
+              ) : (
+                <div key={message.id} className="flex gap-3 justify-end">
+                  <div className="flex-1 text-right">
+                    <div className="bg-black rounded-3xl rounded-tr-md p-4 inline-block max-w-xs">
+                      <p className="text-white text-base">{message.text}</p>
+                    </div>
+                    <p className="text-xs text-black opacity-40 mt-1 mr-2">{message.time}</p>
+                  </div>
+                </div>
+              )
+            ))}
+            {isLoading && (
+              <div className="flex gap-3">
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-400 to-pink-400 flex items-center justify-center flex-shrink-0">
+                  <span className="text-lg">😺</span>
+                </div>
+                <div className="flex-1">
+                  <div className="bg-gray-100 rounded-3xl rounded-tl-md p-4 inline-block">
+                    <p className="text-black text-base">Thinking...</p>
+                  </div>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </>
         )}
-        <div ref={messagesEndRef} />
       </div>
       
       {/* Chat Input */}

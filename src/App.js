@@ -1,38 +1,211 @@
 import React, { useState, useEffect } from 'react';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
 import SpendingPage from './components/SpendingPage';
 import ChatPage from './components/ChatPage';
 import AnalyticsPage from './components/AnalyticsPage';
 import ProfilePage from './components/ProfilePage';
+import AuthPage from './components/AuthPage';
 import NavigationBar from './components/NavigationBar';
 import StatusBar from './components/StatusBar';
+import { supabase } from './lib/supabase';
 import './App.css';
 
-function App() {
-  // Load transactions from localStorage on mount
-  const [transactions, setTransactions] = useState(() => {
-    const saved = localStorage.getItem('chatty_wallet_transactions');
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  // Save transactions to localStorage whenever they change
-  useEffect(() => {
-    localStorage.setItem('chatty_wallet_transactions', JSON.stringify(transactions));
-  }, [transactions]);
-
+function AppContent() {
+  const { user, loading } = useAuth();
+  const [transactions, setTransactions] = useState([]);
+  const [loadingData, setLoadingData] = useState(false);
   const [currentPage, setCurrentPage] = useState('spending');
+
+  // Load transactions from Supabase when user logs in
+  useEffect(() => {
+    if (user) {
+      loadTransactions();
+      migrateLocalDataToSupabase();
+    } else {
+      setTransactions([]);
+    }
+  }, [user]);
+
+  const loadTransactions = async () => {
+    if (!user) return;
+    
+    setLoadingData(true);
+    try {
+      const { data, error } = await supabase
+        .from('transactions')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      // Convert Supabase format to app format
+      const formattedTransactions = (data || []).map(t => ({
+        id: t.id,
+        date: t.date,
+        time: t.time,
+        description: t.description,
+        amount: parseFloat(t.amount),
+        type: t.type,
+        category: t.category,
+        mood: t.mood
+      }));
+
+      setTransactions(formattedTransactions);
+    } catch (error) {
+      console.error('Error loading transactions:', error);
+    } finally {
+      setLoadingData(false);
+    }
+  };
+
+  const migrateLocalDataToSupabase = async () => {
+    if (!user) return;
+
+    try {
+      // Check if user already has data in Supabase
+      const { data: existingData } = await supabase
+        .from('transactions')
+        .select('id')
+        .eq('user_id', user.id)
+        .limit(1);
+
+      // If no data exists, migrate from localStorage
+      if (!existingData || existingData.length === 0) {
+        const localTransactions = localStorage.getItem('chatty_wallet_transactions');
+        if (localTransactions) {
+          const parsed = JSON.parse(localTransactions);
+          if (parsed && parsed.length > 0) {
+            const transactionsToInsert = parsed.map(t => ({
+              user_id: user.id,
+              date: t.date,
+              time: t.time,
+              description: t.description,
+              amount: Math.abs(t.amount),
+              type: t.type,
+              category: t.category,
+              mood: t.mood
+            }));
+
+            const { error } = await supabase
+              .from('transactions')
+              .insert(transactionsToInsert);
+
+            if (!error) {
+              // Clear local storage after successful migration
+              localStorage.removeItem('chatty_wallet_transactions');
+              loadTransactions();
+            }
+          }
+        }
+
+        // Migrate categories
+        const localCategories = localStorage.getItem('chatty_wallet_expense_categories');
+        if (localCategories) {
+          const parsed = JSON.parse(localCategories);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const categoriesToInsert = parsed
+              .filter(cat => typeof cat === 'string')
+              .map(cat => ({
+                user_id: user.id,
+                category_name: cat
+              }));
+
+            if (categoriesToInsert.length > 0) {
+              await supabase
+                .from('user_categories')
+                .insert(categoriesToInsert)
+                .then(() => {
+                  localStorage.removeItem('chatty_wallet_expense_categories');
+                });
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error migrating data:', error);
+    }
+  };
+
+  const handleSetTransactions = async (newTransactions) => {
+    setTransactions(newTransactions);
+    
+    // Save to Supabase
+    if (user) {
+      try {
+        // Get the last transaction to save
+        const lastTransaction = newTransactions[0];
+        if (lastTransaction && lastTransaction.id) {
+          // Check if it already exists (update) or is new (insert)
+          const existing = transactions.find(t => t.id === lastTransaction.id);
+          
+          if (!existing) {
+            // New transaction - insert to Supabase
+            const { error } = await supabase
+              .from('transactions')
+              .insert({
+                user_id: user.id,
+                date: lastTransaction.date,
+                time: lastTransaction.time,
+                description: lastTransaction.description,
+                amount: Math.abs(lastTransaction.amount),
+                type: lastTransaction.type,
+                category: lastTransaction.category,
+                mood: lastTransaction.mood
+              });
+
+            if (error) throw error;
+          }
+        }
+      } catch (error) {
+        console.error('Error saving transaction:', error);
+      }
+    }
+  };
+
+  const handleDeleteTransaction = async (transactionId) => {
+    if (!user) return;
+
+    try {
+      const { error } = await supabase
+        .from('transactions')
+        .delete()
+        .eq('id', transactionId)
+        .eq('user_id', user.id);
+
+      if (error) throw error;
+
+      // Update local state
+      setTransactions(prev => prev.filter(t => t.id !== transactionId));
+    } catch (error) {
+      console.error('Error deleting transaction:', error);
+    }
+  };
+
+  if (loading || loadingData) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <p className="text-gray-600">Loading...</p>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <AuthPage />;
+  }
 
   const renderPage = () => {
     switch (currentPage) {
       case 'spending':
-        return <SpendingPage transactions={transactions} setTransactions={setTransactions} />;
+        return <SpendingPage transactions={transactions} setTransactions={handleSetTransactions} onDeleteTransaction={handleDeleteTransaction} />;
       case 'chat':
         return <ChatPage transactions={transactions} />;
       case 'analytics':
-        return <AnalyticsPage />;
+        return <AnalyticsPage transactions={transactions} />;
       case 'profile':
-        return <ProfilePage />;
+        return <ProfilePage transactions={transactions} />;
       default:
-        return <SpendingPage transactions={transactions} setTransactions={setTransactions} />;
+        return <SpendingPage transactions={transactions} setTransactions={handleSetTransactions} onDeleteTransaction={handleDeleteTransaction} />;
     }
   };
 
@@ -46,6 +219,14 @@ function App() {
         <NavigationBar currentPage={currentPage} onNavigate={setCurrentPage} />
       </div>
     </div>
+  );
+}
+
+function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }
 

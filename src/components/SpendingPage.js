@@ -1,13 +1,80 @@
 import React, { useState, useEffect } from 'react';
 
-function SpendingPage({ transactions, setTransactions }) {
+const STORAGE_KEY_CATEGORIES = 'chatty_wallet_expense_categories';
+const DEFAULT_CATEGORIES = ['shopping', 'food', 'transport', 'entertainment'];
+
+function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
   const [showModal, setShowModal] = useState(false);
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [transactionType, setTransactionType] = useState('expense');
   const [description, setDescription] = useState('');
   const [amount, setAmount] = useState('');
   const [category, setCategory] = useState('shopping');
+  const [mood, setMood] = useState(null);
+  const [expenseCategories, setExpenseCategories] = useState(() => {
+    const saved = localStorage.getItem(STORAGE_KEY_CATEGORIES);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // Handle both string array and object array formats
+          const cleaned = parsed.map(cat => {
+            if (typeof cat === 'string') {
+              return cat;
+            } else if (cat && typeof cat === 'object' && cat.name) {
+              // Old format: { name: 'shopping', emoji: '🛍️' }
+              return cat.name;
+            } else {
+              return null;
+            }
+          }).filter(cat => cat && typeof cat === 'string');
+          
+          // If we have valid categories, return them; otherwise use defaults
+          if (cleaned.length > 0) {
+            return cleaned;
+          }
+        }
+      } catch (e) {
+        console.error('Failed to parse categories:', e);
+      }
+    }
+    // Reset to defaults if invalid data
+    localStorage.setItem(STORAGE_KEY_CATEGORIES, JSON.stringify(DEFAULT_CATEGORIES));
+    return DEFAULT_CATEGORIES;
+  });
+  const [editingCategory, setEditingCategory] = useState(null);
+  const [newCategoryName, setNewCategoryName] = useState('');
   
-  const expenseCategories = ['shopping', 'food', 'transport', 'entertainment'];
+  // Validate and clean categories on mount and whenever they change
+  useEffect(() => {
+    // Ensure all categories are strings
+    const validCategories = expenseCategories
+      .map(cat => {
+        if (typeof cat === 'string') {
+          return cat;
+        } else if (cat && typeof cat === 'object' && cat.name && typeof cat.name === 'string') {
+          return cat.name;
+        }
+        return null;
+      })
+      .filter(cat => cat && typeof cat === 'string' && cat !== '[object Object]');
+    
+    // If we have valid categories, use them; otherwise use defaults
+    const categoriesToUse = validCategories.length > 0 ? validCategories : DEFAULT_CATEGORIES;
+    
+    // Only update if categories changed
+    if (JSON.stringify(categoriesToUse) !== JSON.stringify(expenseCategories)) {
+      setExpenseCategories(categoriesToUse);
+    }
+    
+    // Save to localStorage
+    localStorage.setItem(STORAGE_KEY_CATEGORIES, JSON.stringify(categoriesToUse));
+    
+    // Update selected category if needed
+    if (!categoriesToUse.includes(category)) {
+      setCategory(categoriesToUse[0] || 'shopping');
+    }
+  }, [expenseCategories, category]);
   
   const getCategoryIcon = (category) => {
     const icons = {
@@ -59,7 +126,7 @@ function SpendingPage({ transactions, setTransactions }) {
     }
   }, [showModal]);
 
-  const handleAddTransaction = () => {
+  const handleAddTransaction = async () => {
     if (!description.trim() || !amount.trim() || parseFloat(amount) <= 0) return;
     
     const now = new Date();
@@ -71,18 +138,53 @@ function SpendingPage({ transactions, setTransactions }) {
       description: description.trim(),
       amount: transactionType === 'income' ? parseFloat(amount) : -parseFloat(amount),
       type: transactionType,
-      category: transactionType === 'income' ? 'income' : category
+      category: transactionType === 'income' ? 'income' : category,
+      mood: transactionType === 'expense' ? mood : null
     };
     
+    // Update local state immediately
     setTransactions([newTransaction, ...transactions]);
     setShowModal(false);
     setDescription('');
     setAmount('');
-    setCategory('shopping');
+    setCategory(expenseCategories[0] || 'shopping');
+    setMood(null);
   };
 
-  // Calculate balance and earnings from transactions
-  const balance = transactions.reduce((sum, t) => sum + t.amount, 0);
+  const handleAddCategory = () => {
+    const trimmedName = newCategoryName.trim().toLowerCase();
+    if (!trimmedName || expenseCategories.includes(trimmedName)) return;
+    setExpenseCategories([...expenseCategories, trimmedName]);
+    setNewCategoryName('');
+  };
+
+  const handleDeleteCategory = (catToDelete) => {
+    if (expenseCategories.length <= 1) return; // Keep at least one category
+    setExpenseCategories(expenseCategories.filter(cat => cat !== catToDelete));
+    if (category === catToDelete) {
+      setCategory(expenseCategories.filter(cat => cat !== catToDelete)[0]);
+    }
+  };
+
+  const handleEditCategory = (oldCat, newCat) => {
+    const trimmedNew = newCat.trim().toLowerCase();
+    if (!trimmedNew || (trimmedNew !== oldCat && expenseCategories.includes(trimmedNew))) return;
+    
+    // Update category in transactions
+    const updatedTransactions = transactions.map(t => 
+      t.category === oldCat ? { ...t, category: trimmedNew } : t
+    );
+    setTransactions(updatedTransactions);
+    
+    // Update categories list
+    setExpenseCategories(expenseCategories.map(cat => cat === oldCat ? trimmedNew : cat));
+    if (category === oldCat) {
+      setCategory(trimmedNew);
+    }
+    setEditingCategory(null);
+  };
+
+  // Calculate earnings from transactions
   const earnings = transactions
     .filter(t => t.type === 'income')
     .reduce((sum, t) => sum + Math.abs(t.amount), 0);
@@ -187,7 +289,13 @@ function SpendingPage({ transactions, setTransactions }) {
             >
               {/* Delete button - center right */}
               <button
-                onClick={() => setTransactions(transactions.filter(t => t.id !== transaction.id))}
+                onClick={() => {
+                  if (onDeleteTransaction) {
+                    onDeleteTransaction(transaction.id);
+                  } else {
+                    setTransactions(transactions.filter(t => t.id !== transaction.id));
+                  }
+                }}
                 className="absolute right-3 opacity-0 group-hover:opacity-100 transition-opacity p-1 text-gray-400 hover:text-red-500"
                 style={{ top: '50%', transform: 'translateY(-50%)' }}
                 title="Delete"
@@ -200,9 +308,14 @@ function SpendingPage({ transactions, setTransactions }) {
               <div className="flex justify-between items-start">
                 {/* Left: Title and Category */}
                 <div className="flex-1 min-w-0 pr-4">
-                  <h3 className="text-base font-semibold text-black mb-1">{transaction.description}</h3>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="text-base font-semibold text-black">{transaction.description}</h3>
+                    {transaction.mood && (
+                      <span className="text-lg">{transaction.mood === 'happy' ? '🙂' : transaction.mood === 'neutral' ? '😐' : '🫠'}</span>
+                    )}
+                  </div>
                   <p className="text-xs text-gray-500">
-                    {transaction.type === 'expense' ? 'Expense' : 'Income'} / {transaction.category.charAt(0).toUpperCase() + transaction.category.slice(1)}
+                    {transaction.type === 'expense' ? 'Expense' : 'Income'} / {String(transaction.category).charAt(0).toUpperCase() + String(transaction.category).slice(1)}
                   </p>
                 </div>
 
@@ -253,25 +366,85 @@ function SpendingPage({ transactions, setTransactions }) {
                 />
               </div>
               {transactionType === 'expense' && (
-                <div>
-                  <label className="text-sm text-black opacity-60 mb-2 block">Category</label>
-                  <div className="grid grid-cols-2 gap-2">
-                    {expenseCategories.map((cat) => (
+                <>
+                  <div>
+                    <div className="flex justify-between items-center mb-2">
+                      <label className="text-sm text-black opacity-60 block">Category</label>
                       <button
-                        key={cat}
-                        onClick={() => setCategory(cat)}
-                        className={`py-3 rounded-lg font-medium text-sm transition flex items-center justify-center gap-2 ${
-                          category === cat
-                            ? 'bg-black text-white'
-                            : 'bg-gray-100 text-black hover:bg-gray-200'
-                        }`}
+                        onClick={() => setShowCategoryModal(true)}
+                        className="text-xs text-black opacity-60 hover:opacity-100 underline"
                       >
-                        {getCategoryIcon(cat)}
-                        {cat.charAt(0).toUpperCase() + cat.slice(1)}
+                        Manage Categories
                       </button>
-                    ))}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {(Array.isArray(expenseCategories) && expenseCategories.length > 0 
+                        ? expenseCategories 
+                        : DEFAULT_CATEGORIES)
+                        .filter(cat => {
+                          // Filter out invalid categories
+                          if (!cat) return false;
+                          if (typeof cat === 'string') return true;
+                          if (cat && typeof cat === 'object' && cat.name) return true;
+                          return false;
+                        })
+                        .map((cat) => {
+                          // Extract string name from category
+                          let catName = 'shopping';
+                          if (typeof cat === 'string') {
+                            catName = cat;
+                          } else if (cat && typeof cat === 'object' && cat.name && typeof cat.name === 'string') {
+                            catName = cat.name;
+                          } else {
+                            catName = String(cat);
+                          }
+                          
+                          // Skip if invalid
+                          if (!catName || catName === '[object Object]' || catName === 'null' || catName === 'undefined') {
+                            return null;
+                          }
+                          
+                          return (
+                            <button
+                              key={catName}
+                              onClick={() => setCategory(catName)}
+                              className={`py-3 rounded-lg font-medium text-sm transition flex items-center justify-center gap-2 ${
+                                category === catName
+                                  ? 'bg-black text-white'
+                                  : 'bg-gray-100 text-black hover:bg-gray-200'
+                              }`}
+                            >
+                              {getCategoryIcon(catName)}
+                              {catName.charAt(0).toUpperCase() + catName.slice(1)}
+                            </button>
+                          );
+                        })
+                        .filter(Boolean)}
+                    </div>
                   </div>
-                </div>
+                  <div>
+                    <label className="text-sm text-black opacity-60 mb-2 block">How do you feel?</label>
+                    <div className="flex gap-3">
+                      {[
+                        { emoji: '🙂', value: 'happy' },
+                        { emoji: '😐', value: 'neutral' },
+                        { emoji: '🫠', value: 'sad' }
+                      ].map((m) => (
+                        <button
+                          key={m.value}
+                          onClick={() => setMood(m.value)}
+                          className={`flex-1 py-4 rounded-lg font-medium text-2xl transition ${
+                            mood === m.value
+                              ? 'bg-black text-white'
+                              : 'bg-gray-100 text-black hover:bg-gray-200'
+                          }`}
+                        >
+                          {m.emoji}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
               )}
               <div className="flex gap-3">
                 <button
@@ -288,6 +461,124 @@ function SpendingPage({ transactions, setTransactions }) {
                   Add
                 </button>
               </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Category Management Modal */}
+      {showCategoryModal && (
+        <>
+          <div 
+            className="absolute inset-0 bg-black bg-opacity-50 z-[100]"
+            onClick={() => {
+              setShowCategoryModal(false);
+              setEditingCategory(null);
+              setNewCategoryName('');
+            }}
+            style={{ top: 0, left: 0, right: 0, bottom: 0 }}
+          ></div>
+          <div className="absolute bottom-0 left-0 right-0 bg-white rounded-t-lg p-6 z-[101] max-h-[80vh] overflow-y-auto">
+            <h3 className="text-xl font-medium text-black mb-4">Manage Categories</h3>
+            <div className="space-y-4">
+              {/* Add New Category */}
+              <div>
+                <label className="text-sm text-black opacity-60 mb-2 block">Add New Category</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Category name"
+                    value={newCategoryName}
+                    onChange={(e) => setNewCategoryName(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && handleAddCategory()}
+                    className="flex-1 bg-gray-100 rounded-lg px-4 py-3 text-black placeholder-gray-400 border-none outline-none text-base"
+                  />
+                  <button
+                    onClick={handleAddCategory}
+                    disabled={!newCategoryName.trim() || expenseCategories.includes(newCategoryName.trim().toLowerCase())}
+                    className="bg-black text-white px-6 py-3 rounded-lg font-medium text-base disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+
+              {/* Category List */}
+              <div>
+                <label className="text-sm text-black opacity-60 mb-2 block">Categories</label>
+                <div className="space-y-2">
+                  {expenseCategories
+                    .filter(cat => cat && typeof cat === 'string')
+                    .map((cat) => {
+                      const catName = typeof cat === 'string' ? cat : (cat?.name || 'shopping');
+                      return (
+                        <div key={catName} className="flex items-center gap-2 p-3 bg-gray-100 rounded-lg">
+                          {editingCategory === catName ? (
+                            <>
+                              <input
+                                type="text"
+                                defaultValue={catName}
+                                onBlur={(e) => handleEditCategory(catName, e.target.value)}
+                                onKeyPress={(e) => {
+                                  if (e.key === 'Enter') {
+                                    handleEditCategory(catName, e.target.value);
+                                  } else if (e.key === 'Escape') {
+                                    setEditingCategory(null);
+                                  }
+                                }}
+                                autoFocus
+                                className="flex-1 bg-white rounded px-3 py-2 text-black outline-none text-sm"
+                              />
+                              <button
+                                onClick={() => setEditingCategory(null)}
+                                className="text-gray-500 hover:text-black px-2"
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <div className="flex-1 flex items-center gap-2">
+                                {getCategoryIcon(catName)}
+                                <span className="text-base text-black">{catName.charAt(0).toUpperCase() + catName.slice(1)}</span>
+                              </div>
+                              <button
+                                onClick={() => setEditingCategory(catName)}
+                                className="text-gray-500 hover:text-black px-2"
+                                title="Edit"
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+                                </svg>
+                              </button>
+                              <button
+                                onClick={() => handleDeleteCategory(catName)}
+                                disabled={expenseCategories.filter(c => c && typeof c === 'string').length <= 1}
+                                className="text-gray-500 hover:text-red-500 px-2 disabled:opacity-30 disabled:cursor-not-allowed"
+                                title="Delete"
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                                </svg>
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+
+              <button
+                onClick={() => {
+                  setShowCategoryModal(false);
+                  setEditingCategory(null);
+                  setNewCategoryName('');
+                }}
+                className="w-full bg-gray-200 text-black py-4 rounded-lg font-medium text-base"
+              >
+                Done
+              </button>
             </div>
           </div>
         </>

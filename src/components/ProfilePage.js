@@ -1,6 +1,55 @@
-import React from 'react';
+import React, { useMemo } from 'react';
+import { useAuth } from '../contexts/AuthContext';
 
-function ProfilePage() {
+function ProfilePage({ transactions = [] }) {
+  const { user, signOut } = useAuth();
+
+  const handleLogout = async () => {
+    if (window.confirm('Are you sure you want to logout?')) {
+      await signOut();
+    }
+  };
+
+  // Calculate actual statistics
+  const stats = useMemo(() => {
+    // Days Active: Calculate from user creation date or first transaction
+    let daysActive = 1;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Reset to start of day for accurate calculation
+    
+    if (user?.created_at) {
+      // Supabase returns created_at as ISO string
+      const createdDate = new Date(user.created_at);
+      createdDate.setHours(0, 0, 0, 0);
+      if (!isNaN(createdDate.getTime())) {
+        const diffTime = today - createdDate;
+        daysActive = Math.max(1, Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1); // +1 to include today
+      }
+    } else if (transactions.length > 0) {
+      // If no user creation date, use first transaction date
+      // Transactions are sorted by created_at DESC, so last one is oldest
+      const firstTransaction = transactions[transactions.length - 1];
+      
+      // Try to get created_at from transaction if available (from Supabase)
+      if (firstTransaction.created_at) {
+        const firstDate = new Date(firstTransaction.created_at);
+        firstDate.setHours(0, 0, 0, 0);
+        if (!isNaN(firstDate.getTime())) {
+          const diffTime = today - firstDate;
+          daysActive = Math.max(1, Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1);
+        }
+      }
+    }
+
+    // Total Transactions
+    const totalTransactions = transactions.length;
+
+    return {
+      daysActive: Math.max(1, daysActive),
+      totalTransactions
+    };
+  }, [user, transactions]);
+
   return (
     <div className="p-6 pb-24">
       {/* Header */}
@@ -13,18 +62,20 @@ function ProfilePage() {
         <div className="w-24 h-24 mx-auto mb-4 rounded-full bg-gradient-to-br from-purple-400 to-pink-400 flex items-center justify-center">
           <span className="text-5xl">😺</span>
         </div>
-        <h2 className="text-2xl font-medium text-black mb-1">Catty User</h2>
-        <p className="text-base text-black opacity-60">Member since Oct 2024</p>
+        <h2 className="text-2xl font-medium text-black mb-1">
+          {user?.user_metadata?.name || user?.user_metadata?.nickname || user?.email?.split('@')[0] || 'User'}
+        </h2>
+        <p className="text-base text-black opacity-60">{user?.email || 'No email'}</p>
       </div>
       
       {/* Stats Grid */}
       <div className="grid grid-cols-2 gap-3 mb-8">
         <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-lg p-4 text-center">
-          <p className="text-3xl font-bold text-black mb-1">24</p>
+          <p className="text-3xl font-bold text-black mb-1">{stats.daysActive}</p>
           <p className="text-sm text-black opacity-60">Days Active</p>
         </div>
         <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-lg p-4 text-center">
-          <p className="text-3xl font-bold text-black mb-1">156</p>
+          <p className="text-3xl font-bold text-black mb-1">{stats.totalTransactions}</p>
           <p className="text-sm text-black opacity-60">Transactions</p>
         </div>
       </div>
@@ -72,7 +123,10 @@ function ProfilePage() {
       
       {/* Logout Button */}
       <div className="mt-8">
-        <button className="w-full bg-red-500 text-white py-4 rounded-lg font-medium text-base">
+        <button 
+          onClick={handleLogout}
+          className="w-full bg-red-500 text-white py-4 rounded-lg font-medium text-base hover:bg-red-600 transition-colors"
+        >
           Logout
         </button>
       </div>
