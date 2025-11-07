@@ -4,6 +4,7 @@ import SpendingPage from './components/SpendingPage';
 import ChatPage from './components/ChatPage';
 import AnalyticsPage from './components/AnalyticsPage';
 import ProfilePage from './components/ProfilePage';
+import DailySpendingPage from './components/DailySpendingPage';
 import AuthPage from './components/AuthPage';
 import NavigationBar from './components/NavigationBar';
 import StatusBar from './components/StatusBar';
@@ -15,6 +16,7 @@ function AppContent() {
   const [transactions, setTransactions] = useState([]);
   const [loadingData, setLoadingData] = useState(false);
   const [currentPage, setCurrentPage] = useState('spending');
+  const [dailySpendingDate, setDailySpendingDate] = useState(null);
 
   // Load transactions from Supabase when user logs in
   useEffect(() => {
@@ -194,14 +196,47 @@ function AppContent() {
     return <AuthPage />;
   }
 
+  const handleDateClick = (dateKey) => {
+    // Parse dateKey (YYYY-MM-DD) to get day number
+    if (!dateKey) return;
+    const [year, month, day] = dateKey.split('-');
+    const dayNumber = parseInt(day, 10);
+    if (!isNaN(dayNumber) && dayNumber > 0 && dayNumber <= 31) {
+      setDailySpendingDate(dayNumber);
+    }
+  };
+
+  const handleBackFromDailySpending = (newDate) => {
+    if (newDate && typeof newDate === 'number') {
+      setDailySpendingDate(newDate);
+    } else {
+      setDailySpendingDate(null);
+    }
+  };
+
   const renderPage = () => {
+    if (dailySpendingDate !== null && dailySpendingDate !== undefined) {
+      const today = new Date();
+      const currentDay = today.getDate();
+      // Ensure dailySpendingDate is a valid number
+      const validDate = typeof dailySpendingDate === 'number' && !isNaN(dailySpendingDate) ? dailySpendingDate : currentDay;
+      return (
+        <DailySpendingPage
+          transactions={transactions}
+          selectedDate={validDate}
+          onBack={handleBackFromDailySpending}
+          currentDay={currentDay}
+        />
+      );
+    }
+
     switch (currentPage) {
       case 'spending':
         return <SpendingPage transactions={transactions} setTransactions={handleSetTransactions} onDeleteTransaction={handleDeleteTransaction} />;
       case 'chat':
         return <ChatPage transactions={transactions} />;
       case 'analytics':
-        return <AnalyticsPage transactions={transactions} />;
+        return <AnalyticsPage transactions={transactions} onDateClick={handleDateClick} />;
       case 'profile':
         return <ProfilePage transactions={transactions} />;
       default:
@@ -216,7 +251,9 @@ function AppContent() {
         <div className="phone-content">
           {renderPage()}
         </div>
-        <NavigationBar currentPage={currentPage} onNavigate={setCurrentPage} />
+        {dailySpendingDate === null && (
+          <NavigationBar currentPage={currentPage} onNavigate={setCurrentPage} />
+        )}
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-function AnalyticsPage({ transactions = [] }) {
+function AnalyticsPage({ transactions = [], onDateClick }) {
   // State for target goal and period
   const [target, setTarget] = useState(() => {
     const saved = localStorage.getItem('chatty_wallet_target');
@@ -12,6 +12,16 @@ function AnalyticsPage({ transactions = [] }) {
     const saved = localStorage.getItem('chatty_wallet_period');
     return saved || 'month';
   }); // 'week', '2weeks', '3weeks', 'month'
+  const [startDate, setStartDate] = useState(() => {
+    const saved = localStorage.getItem('chatty_wallet_start_date');
+    if (saved) {
+      return saved;
+    }
+    // Default to today in YYYY-MM-DD format
+    const today = new Date();
+    return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  });
+  const [startDateInput, setStartDateInput] = useState('');
   
   // Period configuration
   const periodConfig = {
@@ -73,39 +83,105 @@ function AnalyticsPage({ transactions = [] }) {
   // Calculate daily spending from transactions
   const dailyGoal = Math.round(target / daysInPeriod);
   const today = new Date();
-  const currentDay = today.getDate();
+  today.setHours(0, 0, 0, 0);
   
-  // Group expenses by day
-  const expensesByDay = {};
+  // Parse the selected start date (for goal calculation only)
+  // Parse YYYY-MM-DD format to avoid timezone issues
+  const startDateParts = startDate.split('-');
+  const selectedStartDate = new Date(
+    parseInt(startDateParts[0]), // year
+    parseInt(startDateParts[1]) - 1, // month (0-indexed)
+    parseInt(startDateParts[2]) // day
+  );
+  selectedStartDate.setHours(0, 0, 0, 0);
+  
+  // Calculate the end date based on period (starting from selected start date) - for progress display
+  const calendarStartDate = new Date(selectedStartDate);
+  const calendarEndDate = new Date(selectedStartDate);
+  calendarEndDate.setDate(selectedStartDate.getDate() + daysInPeriod - 1);
+  calendarEndDate.setHours(23, 59, 59, 999); // Set to end of day for inclusive comparison
+  
+  // Generate array of dates for THIS MONTH (always show current month calendar)
+  const currentMonth = today.getMonth();
+  const currentYear = today.getFullYear();
+  const daysInCurrentMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+  
+  const dateArray = [];
+  for (let day = 1; day <= daysInCurrentMonth; day++) {
+    const date = new Date(currentYear, currentMonth, day);
+    date.setHours(0, 0, 0, 0); // Ensure time is set to midnight
+    dateArray.push(date);
+  }
+  
+  // Group expenses by actual date (YYYY-MM-DD format for matching)
+  const expensesByDate = {};
   expenses.forEach(expense => {
     if (expense.date) {
-      // Parse date from format like "Nov 4" or extract day number
-      const dayMatch = expense.date.match(/\d+/);
-      if (dayMatch) {
-        const day = parseInt(dayMatch[0]);
-        if (!expensesByDay[day]) {
-          expensesByDay[day] = 0;
+      // Try to parse the date from various formats
+      let expenseDate = null;
+      
+      // Format like "Nov 4" or "Nov 04"
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const dateMatch = expense.date.match(/(\w+)\s+(\d+)/);
+      if (dateMatch) {
+        const monthName = dateMatch[1];
+        const day = parseInt(dateMatch[2]);
+        const monthIndex = monthNames.findIndex(m => m === monthName);
+        if (monthIndex !== -1) {
+          expenseDate = new Date(today.getFullYear(), monthIndex, day);
+          expenseDate.setHours(0, 0, 0, 0);
         }
-        expensesByDay[day] += Math.abs(expense.amount);
+      }
+      
+      // If we have a date, format it as YYYY-MM-DD for matching
+      if (expenseDate) {
+        const dateKey = `${expenseDate.getFullYear()}-${String(expenseDate.getMonth() + 1).padStart(2, '0')}-${String(expenseDate.getDate()).padStart(2, '0')}`;
+        if (!expensesByDate[dateKey]) {
+          expensesByDate[dateKey] = 0;
+        }
+        expensesByDate[dateKey] += Math.abs(expense.amount);
       }
     }
   });
   
-  // Activity data based on actual spending
+  // Activity data based on actual spending and dates
   const activityData = {};
-  for (let i = 1; i <= daysInPeriod; i++) {
-    const daySpending = expensesByDay[i] || 0;
-    if (i > currentDay) {
-      activityData[i] = 'future';
+  dateArray.forEach((date, index) => {
+    const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    const daySpending = expensesByDate[dateKey] || 0;
+    
+    // Compare dates by timestamp to ensure accurate comparison
+    const dateTimestamp = date.getTime();
+    const startTimestamp = selectedStartDate.getTime();
+    const endTimestamp = calendarEndDate.getTime();
+    
+    // Check if the date is within the goal period (from selected start date)
+    const isInGoalPeriod = dateTimestamp >= startTimestamp && dateTimestamp <= endTimestamp;
+    
+    // If outside the goal period, mark as inactive
+    if (!isInGoalPeriod) {
+      activityData[index] = 'inactive';
+    } else if (date > today) {
+      // Within goal period but future date
+      activityData[index] = 'future';
     } else if (daySpending > dailyGoal) {
-      activityData[i] = 'exceeded';
+      // Within goal period, exceeded daily goal
+      activityData[index] = 'exceeded';
     } else if (daySpending > 0) {
-      activityData[i] = 'good';
+      // Within goal period, has spending but within goal
+      activityData[index] = 'good';
     } else {
-      activityData[i] = 'good'; // No spending is also good
+      // Within goal period, no spending (also good)
+      activityData[index] = 'good';
     }
-  }
+  });
+  
+  // Get the first day of the month to align calendar properly
+  const firstDayOfMonth = new Date(currentYear, currentMonth, 1);
+  const firstDayWeekday = firstDayOfMonth.getDay(); // 0 = Sunday, 1 = Monday, etc.
+  const mondayBasedFirstDay = firstDayWeekday === 0 ? 6 : firstDayWeekday - 1; // Convert to Monday = 0
 
+  // Weekday labels
   const weekDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
   // Helper functions
@@ -115,46 +191,65 @@ function AnalyticsPage({ transactions = [] }) {
       case 'future': return 'bg-[#F7F3F1]';
       case 'exceeded': return 'bg-[#F35DC8]';
       case 'good': return 'bg-[#A4F982]';
+      case 'inactive': return 'bg-gray-100';
       default: return 'bg-gray-200';
     }
   };
   
   const getTextColor = (day) => {
     const level = activityData[day];
-    return level === 'future' ? 'text-gray-400' : 'text-black';
+    if (level === 'future' || level === 'inactive') {
+      return 'text-gray-400';
+    }
+    return 'text-black';
   };
 
   const renderCalendar = () => {
     const days = [];
-    for (let i = 1; i <= daysInPeriod; i++) {
+    
+    // Add empty cells for days before the first day of the month
+    for (let i = 0; i < mondayBasedFirstDay; i++) {
       days.push(
-        <div key={i} className="flex flex-col items-center justify-center">
-          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${getColorClass(i)} transition-all hover:scale-110`}>
-            <span className={`text-sm font-medium ${getTextColor(i)}`}>{i}</span>
-          </div>
+        <div key={`empty-${i}`} className="flex flex-col items-center justify-center">
+          <div className="w-10 h-10 rounded-full"></div>
         </div>
       );
     }
+    
+    // Add cells for each day of the month
+    dateArray.forEach((date, index) => {
+      const dayNumber = date.getDate();
+      const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+      const isClickable = activityData[index] !== 'inactive';
+      
+      days.push(
+        <div key={index} className="flex flex-col items-center justify-center">
+          <div 
+            className={`w-10 h-10 rounded-full flex items-center justify-center ${getColorClass(index)} transition-all ${isClickable ? 'hover:scale-110 cursor-pointer' : 'cursor-default'}`}
+            onClick={() => {
+              if (isClickable && onDateClick) {
+                onDateClick(dateKey);
+              }
+            }}
+          >
+            <span className={`text-sm font-medium ${getTextColor(index)}`}>{dayNumber}</span>
+          </div>
+        </div>
+      );
+    });
     return days;
   };
   
-  // Calculate start and end dates based on period
+  // Calculate start and end dates based on period (from selected start date)
   const getDateRange = () => {
-    const today = new Date();
-    const startDate = new Date(today);
-    startDate.setDate(1); // Start of month
-    
-    const endDate = new Date(today);
-    endDate.setDate(daysInPeriod);
-    
     const formatDate = (date) => {
       const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
       return `${date.getDate()} ${months[date.getMonth()]}`;
     };
     
     return {
-      start: formatDate(startDate),
-      end: formatDate(endDate)
+      start: formatDate(calendarStartDate),
+      end: formatDate(calendarEndDate)
     };
   };
   
@@ -162,20 +257,26 @@ function AnalyticsPage({ transactions = [] }) {
 
   const handleSetTarget = () => {
     const newTarget = parseFloat(targetInput);
+    const newStartDate = startDateInput || startDate;
+    
     if (newTarget && newTarget > 0) {
       setTarget(newTarget);
+      setStartDate(newStartDate);
       // Save to localStorage for ChatPage to access
       localStorage.setItem('chatty_wallet_target', newTarget.toString());
+      localStorage.setItem('chatty_wallet_start_date', newStartDate);
       setShowModal(false);
       setTargetInput('');
+      setStartDateInput('');
     }
   };
   
-  // Save target and period to localStorage whenever they change
+  // Save target, period, and startDate to localStorage whenever they change
   useEffect(() => {
     localStorage.setItem('chatty_wallet_target', target.toString());
     localStorage.setItem('chatty_wallet_period', period);
-  }, [target, period]);
+    localStorage.setItem('chatty_wallet_start_date', startDate);
+  }, [target, period, startDate]);
 
   return (
     <div className="p-6 pb-24 min-h-screen">
@@ -183,7 +284,11 @@ function AnalyticsPage({ transactions = [] }) {
       <div className="mb-4 flex justify-between items-center">
         <h1 className="text-2xl font-bold text-black">Details</h1>
         <button 
-          onClick={() => setShowModal(true)}
+          onClick={() => {
+            setStartDateInput(startDate);
+            setTargetInput(target.toString());
+            setShowModal(true);
+          }}
           className="w-10 h-10 rounded-full bg-black flex items-center justify-center hover:bg-gray-800 transition-colors"
         >
           <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -253,8 +358,8 @@ function AnalyticsPage({ transactions = [] }) {
         </div>
         
         <div className="grid grid-cols-7 gap-3 mb-4">
-          {weekDays.map(day => (
-            <div key={day} className="text-center text-xs text-gray-500 font-medium">
+          {weekDays.map((day, index) => (
+            <div key={index} className="text-center text-xs text-gray-500 font-medium">
               {day}
             </div>
           ))}
@@ -343,8 +448,8 @@ function AnalyticsPage({ transactions = [] }) {
       {showModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-80 mx-4">
-            <h2 className="text-xl font-bold text-black mb-4">Set Target Goal</h2>
-            <p className="text-sm text-gray-600 mb-4">Enter your savings goal and period</p>
+            <h2 className="text-xl font-bold text-black mb-2" style={{ fontFamily: 'sans-serif' }}>Set Target Goal</h2>
+            <p className="text-sm text-gray-600 mb-6">Enter your savings goal and period</p>
             
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -353,13 +458,43 @@ function AnalyticsPage({ transactions = [] }) {
               <select
                 value={period}
                 onChange={(e) => setPeriod(e.target.value)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black bg-white"
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black bg-white text-black font-normal"
+                style={{
+                  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23333' d='M6 9L1 4h10z'/%3E%3C/svg%3E")`,
+                  backgroundRepeat: 'no-repeat',
+                  backgroundPosition: 'right 12px center',
+                  paddingRight: '40px',
+                  appearance: 'none',
+                  cursor: 'pointer'
+                }}
               >
                 <option value="week">1 Week</option>
                 <option value="2weeks">2 Weeks</option>
                 <option value="3weeks">3 Weeks</option>
                 <option value="month">1 Month</option>
               </select>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Start Date
+              </label>
+              <div className="relative">
+                <input
+                  type="date"
+                  value={startDateInput || startDate}
+                  onChange={(e) => setStartDateInput(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black pr-10 text-black"
+                  style={{ 
+                    colorScheme: 'light'
+                  }}
+                />
+                <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                </div>
+              </div>
             </div>
 
             <div className="mb-6">
@@ -370,11 +505,11 @@ function AnalyticsPage({ transactions = [] }) {
                 type="number"
                 value={targetInput}
                 onChange={(e) => setTargetInput(e.target.value)}
-                placeholder="5000"
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black"
+                placeholder="200"
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black text-black"
               />
-              {targetInput && !isNaN(parseFloat(targetInput)) && (
-                <p className="text-xs text-gray-500 mt-1">
+              {targetInput && !isNaN(parseFloat(targetInput)) && parseFloat(targetInput) > 0 && (
+                <p className="text-sm text-gray-500 mt-1">
                   Daily Goal: ${Math.round(parseFloat(targetInput) / daysInPeriod)}
                 </p>
               )}
@@ -385,14 +520,17 @@ function AnalyticsPage({ transactions = [] }) {
                 onClick={() => {
                   setShowModal(false);
                   setTargetInput('');
+                  setStartDateInput('');
                 }}
                 className="flex-1 px-4 py-3 bg-gray-200 text-gray-700 rounded-lg font-medium hover:bg-gray-300 transition-colors"
+                style={{ fontFamily: 'sans-serif' }}
               >
                 Cancel
               </button>
               <button
                 onClick={handleSetTarget}
                 className="flex-1 px-4 py-3 bg-black text-white rounded-lg font-medium hover:bg-gray-800 transition-colors"
+                style={{ fontFamily: 'sans-serif' }}
               >
                 Set
               </button>

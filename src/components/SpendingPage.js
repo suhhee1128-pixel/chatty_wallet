@@ -216,7 +216,15 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
               <line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line>
             </svg>
           </div>
-          <h1 className="text-xl font-normal text-black mb-2">2025/11/04</h1>
+          <h1 className="text-xl font-normal text-black mb-2">
+            {(() => {
+              const today = new Date();
+              const year = today.getFullYear();
+              const month = String(today.getMonth() + 1).padStart(2, '0');
+              const day = String(today.getDate()).padStart(2, '0');
+              return `${year}/${month}/${day}`;
+            })()}
+          </h1>
         </div>
         
         {/* Main Amount Display */}
