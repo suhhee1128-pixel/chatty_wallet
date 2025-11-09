@@ -10,7 +10,25 @@ function AuthPage() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
-  const { signIn, signUp } = useAuth();
+  const { signIn, signUp, signInWithGoogle } = useAuth();
+
+  const handleGoogleSignIn = async () => {
+    setError('');
+    setSuccess('');
+    setLoading(true);
+    try {
+      const { error } = await signInWithGoogle();
+      if (error) {
+        throw error;
+      }
+      // Supabase will redirect for OAuth; keep loading state minimal
+    } catch (err) {
+      console.error('Google sign-in error:', err);
+      setError(err.message || err.error_description || 'Google sign-in failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -186,6 +204,27 @@ function AuthPage() {
             {loading ? 'Loading...' : isLogin ? 'Sign In' : 'Sign Up'}
           </button>
         </form>
+
+        <div className="mt-6">
+          <div className="relative flex items-center justify-center">
+            <span className="px-3 text-xs uppercase tracking-wide text-gray-400 bg-white">or</span>
+            <div className="absolute left-0 right-0 h-px bg-gray-200" aria-hidden="true"></div>
+          </div>
+          <button
+            type="button"
+            onClick={handleGoogleSignIn}
+            disabled={loading}
+            className="mt-4 w-full border border-gray-300 rounded-lg py-3 flex items-center justify-center gap-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 488 512" className="h-5 w-5" aria-hidden="true">
+              <path fill="#4285F4" d="M488 261.8c0-17.8-1.6-35.1-4.6-52H249v98.6h134.4c-5.8 31.4-23.3 58.1-49.7 75.8v63.1h80.5c47.1-43.4 73.8-107.4 73.8-185.5z"/>
+              <path fill="#34A853" d="M249 492c65.7 0 120.8-21.9 161.1-59.4l-80.5-63.1c-22.4 15-50.8 23.7-80.6 23.7-61.9 0-114.3-41.8-133.1-98.1H32.2v61.6C72.8 449.9 156.8 492 249 492z"/>
+              <path fill="#FBBC05" d="M115.9 294.8c-4.9-14.7-7.8-30.4-7.8-46.8s2.8-32.1 7.8-46.8v-61.6H32.2C11.6 179.9 0 215 0 248s11.6 68.1 32.2 108.4l83.7-61.6z"/>
+              <path fill="#EA4335" d="M249 152.1c35.7 0 67.6 12.3 92.8 36.5l69.7-69.7C369.8 76.3 314.7 54 249 54 156.8 54 72.8 96.1 32.2 139.6l83.7 61.6C134.7 193.9 187.1 152.1 249 152.1z"/>
+            </svg>
+            Continue with Google
+          </button>
+        </div>
 
         <div className="mt-6 text-center">
           <button

@@ -69,6 +69,22 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  const signInWithGoogle = async () => {
+    try {
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+        },
+      });
+      if (error) throw error;
+      return { data, error: null };
+    } catch (err) {
+      console.error('Supabase Google sign-in exception:', err);
+      return { data: null, error: err };
+    }
+  };
+
   const signOut = async () => {
     const { error } = await supabase.auth.signOut();
     return { error };
@@ -80,6 +96,7 @@ export const AuthProvider = ({ children }) => {
     signUp,
     signIn,
     signOut,
+    signInWithGoogle,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

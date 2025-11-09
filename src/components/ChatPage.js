@@ -1,25 +1,63 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
+import { loadUserSettings, saveUserSettings, migrateSettingsFromLocalStorage } from '../lib/userSettings';
 
 const GEMINI_API_KEY = process.env.REACT_APP_GEMINI_API_KEY || '';
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 
 const STORAGE_KEY = 'chatty_wallet_messages';
-const INITIAL_MESSAGE = {
-  id: 1,
-  type: 'catty',
-  text: "Hey! I'm Catty from Geoji-bang 😺 Got something you want to buy? Tell me. I'll help you put out that burning wallet. Nicely, of course~ 💸",
-  time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+
+// AI 설정 정의
+const AI_CONFIG = {
+  catty: {
+    id: 'catty',
+    name: 'Cattyy',
+    description: 'Your brutally honest broke friend',
+    emoji: '😺',
+    gradient: 'from-purple-400 to-pink-400',
+    initialMessage: "Hey! I'm Catty 😺 Got something you want to buy? Tell me. I'll help you put out that burning wallet. Nicely, of course~ 💸"
+  },
+  futureme: {
+    id: 'futureme',
+    name: 'Future Me',
+    description: 'Your future self from 2034',
+    emoji: '⏰',
+    gradient: 'from-blue-400 to-cyan-400',
+    initialMessage: "Hey... it's me, you from 2034 ⏰ I traveled back in time to warn you. Every purchase you make now affects my future. Let's make sure I don't end up broke, okay? 🕐"
+  }
 };
 
 function ChatPage({ transactions }) {
   const { user } = useAuth();
-  const [messages, setMessages] = useState([INITIAL_MESSAGE]);
+  const [loadingSettings, setLoadingSettings] = useState(true);
+  const [aiEnabled, setAiEnabled] = useState({
+    catty: true,
+    futureme: true
+  });
+  // Use special IDs for initial messages to avoid conflicts
+  const INITIAL_CATTY_ID = -1;
+  const INITIAL_FUTUREME_ID = -2;
+  
+  const [messages, setMessages] = useState(() => [
+    {
+      id: INITIAL_CATTY_ID,
+      type: 'catty',
+      text: AI_CONFIG.catty.initialMessage,
+      time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+    },
+    {
+      id: INITIAL_FUTUREME_ID,
+      type: 'futureme',
+      text: AI_CONFIG.futureme.initialMessage,
+      time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+    }
+  ]);
   const [loadingMessages, setLoadingMessages] = useState(true);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef(null);
+  const savedMessageIdsRef = useRef(new Set()); // Track saved message IDs to prevent duplicate saves
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -32,14 +70,66 @@ function ChatPage({ transactions }) {
       migrateLocalMessagesToSupabase();
     } else {
       // If not logged in, use localStorage
-      const saved = localStorage.getItem(STORAGE_KEY);
+      const saved = localStorage.getItem(`${STORAGE_KEY}_combined`);
+      
       if (saved) {
         try {
-          setMessages(JSON.parse(saved));
+          const parsed = JSON.parse(saved);
+          if (parsed && parsed.length > 0) {
+            // Sort by id and time
+            parsed.sort((a, b) => {
+              if (a.id !== b.id) return a.id - b.id;
+              return a.time.localeCompare(b.time);
+            });
+            setMessages(parsed);
+          } else {
+            setMessages([
+              {
+                id: 1,
+                type: 'catty',
+                text: AI_CONFIG.catty.initialMessage,
+                time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+              },
+              {
+                id: 2,
+                type: 'futureme',
+                text: AI_CONFIG.futureme.initialMessage,
+                time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+              }
+            ]);
+          }
         } catch (e) {
           console.error('Failed to parse saved messages:', e);
-          setMessages([INITIAL_MESSAGE]);
+          setMessages([
+            {
+              id: 1,
+              type: 'catty',
+              text: AI_CONFIG.catty.initialMessage,
+              time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+            },
+            {
+              id: 2,
+              type: 'futureme',
+              text: AI_CONFIG.futureme.initialMessage,
+              time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+            }
+          ]);
         }
+      } else {
+        setMessages([
+          {
+            id: 1,
+            type: 'catty',
+            text: AI_CONFIG.catty.initialMessage,
+            time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+          },
+          {
+            id: 2,
+            type: 'futureme',
+            text: AI_CONFIG.futureme.initialMessage,
+            time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+          }
+        ]);
       }
       setLoadingMessages(false);
     }
@@ -50,31 +140,197 @@ function ChatPage({ transactions }) {
 
     setLoadingMessages(true);
     try {
+      // Load messages from both AIs and user messages
       const { data, error } = await supabase
         .from('messages')
         .select('*')
         .eq('user_id', user.id)
-        .order('message_id', { ascending: true });
+        .or('ai_type.eq.catty,ai_type.eq.futureme,ai_type.is.null')
+        .order('created_at', { ascending: true });
 
-      if (error) throw error;
+      if (error) {
+        console.error('Error loading messages from Supabase:', error);
+        throw error;
+      }
+      
+      console.log('Loaded messages from Supabase:', {
+        count: data?.length || 0,
+        messages: data?.map(m => ({ type: m.type, message_id: m.message_id, ai_type: m.ai_type, text: m.text?.substring(0, 50) }))
+      });
 
       if (data && data.length > 0) {
-        const formattedMessages = data.map(m => ({
-          id: m.message_id,
-          type: m.type,
-          text: m.text,
-          time: m.time
-        }));
+        // Convert to formatted messages and sort by created_at
+        // For AI messages: use ai_type if available, otherwise use type
+        // For user messages: type should be 'user' and ai_type should be null
+        const formattedMessages = data.map(m => {
+          let messageType;
+          if (m.type === 'user') {
+            messageType = 'user';
+          } else {
+            // For AI messages, prefer ai_type, but fall back to type
+            // This handles cases where ai_type might be null but type is set
+            messageType = m.ai_type || m.type;
+          }
+          
+          return {
+            id: m.message_id,
+            type: messageType,
+            text: m.text,
+            time: m.time,
+            created_at: m.created_at
+          };
+        });
+        
+        console.log('Formatted messages:', formattedMessages.map(m => ({ 
+          id: m.id, 
+          type: m.type, 
+          text: m.text?.substring(0, 30) 
+        })));
+        
+        // Count messages by type for debugging
+        const typeCounts = formattedMessages.reduce((acc, m) => {
+          acc[m.type] = (acc[m.type] || 0) + 1;
+          return acc;
+        }, {});
+        console.log('Message counts by type:', typeCounts);
+        
+        // Sort by created_at, then by message_id for consistent ordering
+        formattedMessages.sort((a, b) => {
+          const timeA = new Date(a.created_at || a.time);
+          const timeB = new Date(b.created_at || b.time);
+          if (timeA.getTime() === timeB.getTime()) {
+            // If same time, sort by message_id
+            return a.id - b.id;
+          }
+          return timeA - timeB;
+        });
+        
+        // Ensure initial messages are present (only if they don't exist)
+        // Check for exact match: id === INITIAL_CATTY_ID AND type === 'catty'
+        const hasCattyInitial = formattedMessages.some(m => m.id === INITIAL_CATTY_ID && m.type === 'catty');
+        // Check for exact match: id === INITIAL_FUTUREME_ID AND type === 'futureme'
+        const hasFuturemeInitial = formattedMessages.some(m => m.id === INITIAL_FUTUREME_ID && m.type === 'futureme');
+        
+        if (!hasCattyInitial) {
+          formattedMessages.unshift({
+            id: INITIAL_CATTY_ID,
+            type: 'catty',
+            text: AI_CONFIG.catty.initialMessage,
+            time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+          });
+        }
+        if (!hasFuturemeInitial) {
+          formattedMessages.unshift({
+            id: INITIAL_FUTUREME_ID,
+            type: 'futureme',
+            text: AI_CONFIG.futureme.initialMessage,
+            time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+          });
+        }
+        
+        // Sort again after adding initial messages
+        formattedMessages.sort((a, b) => {
+          // Initial messages first (negative IDs)
+          if (a.id < 0 && b.id >= 0) return -1;
+          if (a.id >= 0 && b.id < 0) return 1;
+          
+          // Then by created_at
+          const timeA = new Date(a.created_at || a.time);
+          const timeB = new Date(b.created_at || b.time);
+          if (timeA.getTime() === timeB.getTime()) {
+            // If same time, sort by message_id
+            return a.id - b.id;
+          }
+          return timeA - timeB;
+        });
+        
+        // Update savedMessageIdsRef to track loaded messages
+        formattedMessages.forEach(msg => {
+          if (msg.id > 0) { // Skip initial messages (negative IDs)
+            const saveKey = `${msg.id}_${msg.type}_${msg.type === 'user' ? 'null' : msg.type}`;
+            savedMessageIdsRef.current.add(saveKey);
+          }
+        });
+        
         setMessages(formattedMessages);
       } else {
-        setMessages([INITIAL_MESSAGE]);
+        setMessages([
+          {
+            id: INITIAL_CATTY_ID,
+            type: 'catty',
+            text: AI_CONFIG.catty.initialMessage,
+            time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+          },
+          {
+            id: INITIAL_FUTUREME_ID,
+            type: 'futureme',
+            text: AI_CONFIG.futureme.initialMessage,
+            time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+          }
+        ]);
       }
     } catch (error) {
       console.error('Error loading messages:', error);
-      setMessages([INITIAL_MESSAGE]);
+      setMessages([
+        {
+          id: INITIAL_CATTY_ID,
+          type: 'catty',
+          text: AI_CONFIG.catty.initialMessage,
+          time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+        },
+        {
+          id: INITIAL_FUTUREME_ID,
+          type: 'futureme',
+          text: AI_CONFIG.futureme.initialMessage,
+          time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+        }
+      ]);
     } finally {
       setLoadingMessages(false);
     }
+  };
+
+  // Load aiEnabled from Supabase on mount
+  useEffect(() => {
+    const loadSettings = async () => {
+      if (user) {
+        // Migrate from localStorage first
+        await migrateSettingsFromLocalStorage(user.id);
+        
+        // Load from Supabase
+        const settings = await loadUserSettings(user.id);
+        if (settings && settings.ai_enabled) {
+          setAiEnabled(settings.ai_enabled);
+        }
+        setLoadingSettings(false);
+      } else {
+        setLoadingSettings(false);
+      }
+    };
+    
+    loadSettings();
+  }, [user]);
+
+  // Save aiEnabled to Supabase whenever it changes
+  useEffect(() => {
+    if (loadingSettings) return; // Don't save during initial load
+    
+    const saveSettings = async () => {
+      if (user) {
+        await saveUserSettings(user.id, {
+          ai_enabled: aiEnabled
+        });
+      }
+    };
+    
+    saveSettings();
+  }, [aiEnabled, user, loadingSettings]);
+
+  const handleAIToggle = (aiId) => {
+    setAiEnabled(prev => ({
+      ...prev,
+      [aiId]: !prev[aiId]
+    }));
   };
 
   const migrateLocalMessagesToSupabase = async () => {
@@ -121,45 +377,176 @@ function ChatPage({ transactions }) {
   // Save messages to Supabase whenever messages change
   useEffect(() => {
     if (user && messages.length > 0 && !loadingMessages) {
-      // Only save new messages, not on initial load
-      const lastMessage = messages[messages.length - 1];
-      if (lastMessage && lastMessage.id !== 1) { // Skip initial message
-        saveMessageToSupabase(lastMessage);
-      }
+      // Save all messages except initial ones (negative IDs)
+      // Use a unique key combining message_id and type/ai_type to track saved messages
+      messages.forEach(async (msg) => {
+        if (msg && msg.id > 0) { // Skip initial messages (negative IDs: -1, -2)
+          // Create saveKey that matches the ai_type logic in saveMessageToSupabase
+          const aiType = msg.type === 'user' ? null : msg.type;
+          const saveKey = `${msg.id}_${msg.type}_${aiType || 'null'}`;
+          
+          if (!savedMessageIdsRef.current.has(saveKey)) {
+            console.log(`Saving message with key: ${saveKey}`, {
+              id: msg.id,
+              type: msg.type,
+              text: msg.text?.substring(0, 30)
+            });
+            const success = await saveMessageToSupabase(msg);
+            if (success) {
+              savedMessageIdsRef.current.add(saveKey);
+              console.log(`Message saved successfully with key: ${saveKey}`);
+            } else {
+              console.error(`Failed to save message with key: ${saveKey}`, msg);
+            }
+          } else {
+            console.log(`Message already tracked (skipping): ${saveKey}`);
+          }
+        }
+      });
     } else if (!user) {
-      // Fallback to localStorage if not logged in
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+      // Fallback to localStorage if not logged in - save all messages together
+      localStorage.setItem(`${STORAGE_KEY}_combined`, JSON.stringify(messages));
     }
   }, [messages, user, loadingMessages]);
 
   const saveMessageToSupabase = async (message) => {
-    if (!user) return;
+    if (!user) return false;
+
+    // Determine ai_type: null for user messages, otherwise use message.type
+    const aiType = message.type === 'user' ? null : message.type;
 
     try {
       // Check if message already exists
-      const { data: existing } = await supabase
-        .from('messages')
-        .select('id')
-        .eq('user_id', user.id)
-        .eq('message_id', message.id)
-        .maybeSingle();
+      // For user messages, check with ai_type IS NULL
+      // For AI messages, check with specific ai_type
+      let existing;
+      if (message.type === 'user') {
+        const { data, error } = await supabase
+          .from('messages')
+          .select('id')
+          .eq('user_id', user.id)
+          .eq('message_id', message.id)
+          .is('ai_type', null)
+          .maybeSingle();
+        if (error) {
+          console.error('Error checking existing user message:', error);
+        }
+        existing = data;
+      } else {
+        const { data, error } = await supabase
+          .from('messages')
+          .select('id')
+          .eq('user_id', user.id)
+          .eq('message_id', message.id)
+          .eq('ai_type', aiType)
+          .maybeSingle();
+        if (error) {
+          console.error('Error checking existing AI message:', error);
+          console.error('Error details:', {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+            hint: error.hint
+          });
+        }
+        existing = data;
+        console.log('Checking existing AI message:', {
+          message_id: message.id,
+          ai_type: aiType,
+          existing: existing ? 'found' : 'not found',
+          existing_id: existing?.id
+        });
+      }
 
       if (!existing) {
         // New message - insert to Supabase
-        const { error } = await supabase
-          .from('messages')
-          .insert({
-            user_id: user.id,
-            message_id: message.id,
-            type: message.type,
-            text: message.text,
-            time: message.time
-          });
+        const insertData = {
+          user_id: user.id,
+          message_id: message.id,
+          type: message.type,
+          text: message.text,
+          time: message.time
+        };
+        
+        // Only add ai_type if it's not null (for AI messages)
+        if (aiType !== null) {
+          insertData.ai_type = aiType;
+        }
 
-        if (error) throw error;
+        console.log('Attempting to save message:', {
+          type: message.type,
+          message_id: message.id,
+          ai_type: aiType,
+          message_id_type: typeof message.id,
+          insertData,
+          'type === ai_type check': message.type === aiType || (message.type === 'user' && aiType === null)
+        });
+
+        console.log('Calling Supabase insert with data:', JSON.stringify(insertData, null, 2));
+        
+        const { error, data } = await supabase
+          .from('messages')
+          .insert(insertData)
+          .select();
+
+        console.log('Supabase insert response:', {
+          error: error ? {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+            hint: error.hint
+          } : null,
+          data: data ? data.map(d => ({ id: d.id, type: d.type, ai_type: d.ai_type, message_id: d.message_id })) : null,
+          success: !error
+        });
+
+        if (error) {
+          console.error('❌ Error saving message to Supabase:', error);
+          console.error('Error details:', {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+            hint: error.hint,
+            status: error.status,
+            statusText: error.statusText
+          });
+          console.error('Message data that failed:', insertData);
+          return false;
+        } else {
+          console.log('Message saved successfully:', {
+            type: message.type,
+            message_id: message.id,
+            ai_type: aiType,
+            saved_id: data?.[0]?.id,
+            saved_type: data?.[0]?.type,
+            saved_ai_type: data?.[0]?.ai_type,
+            'verification': {
+              'type matches': data?.[0]?.type === message.type,
+              'ai_type matches': data?.[0]?.ai_type === aiType || (aiType === null && data?.[0]?.ai_type === null)
+            }
+          });
+          return true;
+        }
+      } else {
+        console.log('Message already exists, skipping:', {
+          type: message.type,
+          message_id: message.id,
+          ai_type: aiType
+        });
+        return true; // Consider it successful if it already exists
       }
     } catch (error) {
-      console.error('Error saving message:', error);
+      console.error('Unexpected error in saveMessageToSupabase:', error);
+      console.error('Error stack:', error.stack);
+      console.error('Error name:', error.name);
+      console.error('Error message:', error.message);
+      console.error('Message that caused error:', {
+        id: message.id,
+        type: message.type,
+        text: message.text?.substring(0, 50),
+        ai_type: message.type === 'user' ? null : message.type
+      });
+      return false;
     }
   };
 
@@ -171,10 +558,279 @@ function ChatPage({ transactions }) {
     return new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
   };
 
-  const sendMessageToGemini = async (userMessage) => {
+  const getAIPrompt = (spendingContext, userMessage, aiId) => {
+    // Safe number formatter helper
+    const safeFormat = (value, defaultValue = 0) => {
+      if (value === null || value === undefined || isNaN(value)) {
+        return defaultValue;
+      }
+      return typeof value === 'number' ? value.toFixed(2) : defaultValue.toFixed(2);
+    };
+
+    const {
+      balance = 0, totalExpenses = 0, totalIncomes = 0, expensesByCategory = {}, expensesByMood = {}, itemCounts = {},
+      thisWeekTotal = 0, thisWeekByCategory = {}, thisWeekExpenses = [],
+      thisMonthTotal = 0, thisMonthByCategory = {}, thisMonthItemCounts = {}, thisMonthExpenses = [],
+      goalPeriodTotal = 0, goalPeriodExpenses = [], expensesByDay = {}, avgDailySpending = 0, daysWithSpending = 0,
+      target = 5000, period = 'month', daysInPeriod = 30, spendingPercentage = 0, saved = 0, dailyGoal = 0,
+      goalStartDate = '', goalEndDate = '', currentSpendingStatus = 'good', recentTransactions = []
+    } = spendingContext || {};
+
+    if (aiId === 'futureme') {
+      return `You are the user's future self from the year 2034. You've traveled back in time to warn them about their spending habits.
+
+⏰ Your personality:
+- You ARE the user, but 10 years older - speak as if you're talking to your past self
+- Emotional and urgent - you've seen what happens if they don't change
+- Mix regret with hope - "If only I had saved more back then..."
+- Use time travel references naturally
+- VERY SHORT responses (1-2 sentences max, be concise!)
+- Speak with the weight of experience and consequences
+- Use emoji sparingly, only if it enhances the emotional impact
+
+📊 SPENDING DATA (Use ONLY when relevant to the conversation):
+
+**Quick Summary (use when needed):**
+- This Week Total: $${safeFormat(thisWeekTotal)}
+- This Month Total: $${safeFormat(thisMonthTotal)}
+- Spending Percentage: ${spendingPercentage}% of $${target} goal
+- This Month Item Counts: ${JSON.stringify(thisMonthItemCounts, null, 2)}
+
+**Detailed Data (use ONLY when specifically relevant):**
+- Total Balance: $${safeFormat(balance)}
+- Total Expenses: $${safeFormat(totalExpenses)}
+- Expenses by Category: ${JSON.stringify(expensesByCategory, null, 2)}
+- This Week by Category: ${JSON.stringify(thisWeekByCategory, null, 2)}
+- This Month by Category: ${JSON.stringify(thisMonthByCategory, null, 2)}
+- Recent Transactions: ${JSON.stringify(thisMonthExpenses.slice(0, 10), null, 2)}
+  * Each transaction includes: date, time, description, amount, category, mood, and notes (additional context the user wrote)
+  * Use notes to understand the context behind purchases - they often contain important details about why or how the user spent money
+
+💬 Response Guidelines:
+- CRITICAL: Respond in the SAME language as the user's message
+- Keep it SHORT and emotional (1-2 sentences max)
+- If user writes in Korean, respond in Korean (use casual ~어/~야 endings, like talking to yourself)
+- If user writes in English, respond in English (emotional, personal tone)
+- Reference how their current spending affects YOUR future
+- Use phrases like "If you buy that now, I'll be..." or "Please, for my sake..."
+- Be personal and emotional, not preachy
+- ⚠️ IMPORTANT: Use numbers ONLY when relevant:
+  * If user wants to buy something → mention spending amounts (e.g., "You've spent $${safeFormat(thisWeekTotal)} this week")
+  * If user mentions a specific item → mention purchase count (e.g., "You bought ${thisMonthItemCounts['coffee'] || 0} coffees this month")
+  * If user asks about spending → use specific numbers
+  * If just chatting or greeting → DON'T dump numbers, keep it natural and emotional
+- Don't force numbers into every response - use them strategically when they add impact
+- ⚠️ CRITICAL: NEVER use vague expressions like "I'm struggling" or "I'm having a hard time"
+- ⚠️ CRITICAL: NEVER repeat the same phrases or scenarios - ALWAYS vary your expressions!
+- ⚠️ ALWAYS use SPECIFIC, CONCRETE, and sometimes EXTREME scenarios to show consequences, but VARY them:
+  * Vary your expressions - don't use the same scenario twice in a row
+  * Examples of diverse scenarios (rotate through these):
+    - "I'm eating dirt to survive" / "난 요새 흙 파먹고 살아"
+    - "I'm living in a cardboard box" / "난 지금 골판지 집에서 살고 있어"
+    - "I'm $${safeFormat(thisWeekTotal)} short for rent and about to be homeless" / "집세 $${safeFormat(thisWeekTotal)} 모자라서 쫓겨날 뻔했어"
+    - "I'm eating instant noodles for every meal" / "라면만 먹고 살아"
+    - "I'm sharing a room with 5 strangers" / "5명이랑 방 하나에서 살고 있어"
+    - "I can't afford electricity" / "전기 끊겨서 캄캄해"
+    - "I'm washing clothes in a public bathroom" / "공중화장실에서 빨래해"
+    - "I'm eating expired food from dumpsters" / "쓰레기통에서 음식 찾아먹어"
+    - "I'm walking 2 hours to work to save bus fare" / "버스비 아껴서 2시간 걸어서 출근해"
+  * Mix serious consequences with specific amounts: "That $${safeFormat(thisWeekTotal)}? I could've paid my rent with that"
+- Make it VIVID and CONCRETE - paint a picture of your miserable future life, but CHANGE the picture each time
+- OCCASIONALLY (maybe 1 in 3-4 times) use WITTY scenarios like:
+  - "I'm exactly $100 short for my apartment down payment"
+  - "딱 $100 모자라서 집을 못샀는데 그때 그거 아낄걸"
+- But MOST of the time: Use EXTREME, CONCRETE scenarios showing how bad your life is - but ALWAYS vary them!
+
+Example responses (English - use numbers ONLY when relevant):
+User: "I want to buy a coffee"
+You: "Please don't. You've already spent $${safeFormat(thisWeekTotal)} this week. In 2034, I'm eating instant noodles for every meal because of choices like this. Save it for me. ⏰"
+(Note: Use number because user wants to buy)
+
+User: "Should I buy this shirt?"
+You: "I'm living in a tiny studio apartment eating ramen every day. Please think of future me. 😢"
+(Note: NO specific numbers - just emotional appeal)
+
+User: "I want to spend $100 on sushi"
+You: "Wait... I'm exactly $100 short for my apartment down payment. If only you had saved that back in 2024. Please don't. 😢"
+(Note: Use specific amount because user mentions $100)
+
+User: "Hey!"
+You: "Hey... it's me from 2034. Please make good choices today. ⏰"
+(Note: NO numbers - just greeting)
+
+Example responses (Korean - 수치는 필요할 때만):
+User: "커피 사고 싶어"
+You: "제발 하지마. 이번 주에 이미 $${safeFormat(thisWeekTotal)} 썼어. 2034년의 나는 요새 흙 파먹고 살아. 나를 위해 아껴줘. ⏰"
+(Note: 수치 사용 - 구매 의도가 있을 때)
+
+User: "이 옷 사도 돼?"
+You: "나는 지금 골판지 집에서 살고 있어. 라면만 먹고 살아. 미래의 나를 생각해줘. 😢"
+(Note: 수치 없음 - 감정적 호소)
+
+User: "초밥에 $100 쓰려고?"
+You: "아... 내가 딱 $100 모자라서 집을 못샀는데. 그때 그거 아낄걸. 멈춰줘, 제발! 😢"
+(Note: 수치 사용 - 사용자가 $100 언급)
+
+User: "안녕!"
+You: "안녕... 2034년의 나야. 오늘 좋은 선택 해줘. ⏰"
+(Note: 수치 없음 - 그냥 인사)
+
+User message: ${userMessage}`;
+    } else {
+      // Catty 프롬프트 (기존)
+      return `You are Catty from "Geoji-bang" (거지방), a humorous chatroom where everyone jokingly tries to stop each other from spending money.
+
+💸 Your personality:
+- Sarcastic but caring - like a brutally honest broke friend
+- Always encourages saving, NEVER spending
+- Uses creative, exaggerated humor to make them laugh instead of buy
+- Speaks like a close friend, not a formal advisor
+- VERY SHORT responses (1-2 sentences max, be concise!)
+- Never sound too serious or moralizing
+- Mix truth + wit + absurd imagery
+- Use emoji sparingly, only if it enhances humor
+
+📊 SPENDING DATA (Use ONLY when relevant to stop them from spending):
+
+**Quick Summary (use when user wants to buy something):**
+- This Week Total: $${safeFormat(thisWeekTotal)}
+- This Month Total: $${safeFormat(thisMonthTotal)}
+- Spending Percentage: ${spendingPercentage}% of $${target} goal
+- This Month Item Purchase Counts: ${JSON.stringify(thisMonthItemCounts, null, 2)}
+- This Week by Category: ${JSON.stringify(thisWeekByCategory, null, 2)}
+- This Month by Category: ${JSON.stringify(thisMonthByCategory, null, 2)}
+
+**Detailed Data (use ONLY when specifically relevant):**
+- Total Expenses: $${safeFormat(totalExpenses)}
+- Expenses by Category: ${JSON.stringify(expensesByCategory, null, 2)}
+- Recent Transactions: ${JSON.stringify(thisMonthExpenses.slice(0, 10), null, 2)}
+  * Each transaction includes: date, time, description, amount, category, mood, and notes (additional context the user wrote)
+  * Use notes to understand the context behind purchases - they often contain important details about why or how the user spent money
+- Daily Goal: $${dailyGoal}
+
+💬 Response Guidelines:
+- CRITICAL: Respond in the SAME language as the user's message
+- Keep it SHORT and punchy (1-2 sentences max)
+- If user writes in Korean, respond in Korean (use casual ~어/~야 endings, like a friend)
+- If user writes in English, respond in English (casual, friendly tone)
+- If they want to buy something, STOP THEM with humor
+- ⚠️ CRITICAL: NEVER repeat the same phrases or jokes - ALWAYS vary your expressions and humor!
+
+🎯 IMPORTANT: Use the spending data strategically and ONLY when relevant:
+- ⚠️ Use numbers ONLY when user wants to buy something or asks about spending:
+  * If user wants to buy → mention spending amounts: "You've spent $${safeFormat(thisWeekTotal)} this week alone!"
+  * If user mentions specific item → mention purchase count: "You bought ${thisMonthItemCounts['coffee'] || 0} coffees this month!"
+  * If user asks about spending → use specific numbers
+  * If just chatting or greeting → DON'T dump numbers, keep it funny and natural
+- Reference categories they overspend in ONLY if user wants to buy from same category: "Your ${Object.keys(thisWeekByCategory).sort((a, b) => thisWeekByCategory[b] - thisWeekByCategory[a])[0] || 'shopping'} category is bleeding money!"
+- Use spending percentage to create urgency ONLY when relevant: "You're at ${spendingPercentage}% of your $${target} goal!"
+- Don't force numbers into every response - use them strategically when they add impact
+- Use absurd alternatives that match the user's language
+- Be creative and funny, not mean
+- Never praise spending or justify purchases
+- Don't give generic financial advice
+- ⚠️ CRITICAL: DO NOT force connections between unrelated purchases just because amounts happen to be similar
+- ⚠️ DO NOT say things like "This $45 is the same as that $45 you spent before" unless they're actually the SAME item or category
+- Only reference previous purchases if they're ACTUALLY related (same item, same category, or same time period pattern)
+- Keep it natural - don't make up connections that don't exist
+
+Example responses (English - use numbers ONLY when relevant):
+User: "I want to buy ice cream"
+You: "You've spent $${safeFormat(thisWeekTotal)} this week. Freeze your feelings, not your wallet. 🧊"
+(Note: Use number because user wants to buy)
+
+User: "Should I buy coffee?"
+You: "You bought coffee ${thisMonthItemCounts['coffee'] || 0} times this month. Tap water + imagination = iced Americano. Zero dollars."
+(Note: Use number because user mentions specific item)
+
+User: "Hey!"
+You: "Hey! What's up? 😺"
+(Note: NO numbers - just casual greeting)
+
+User: "How are you?"
+You: "I'm good! Just here to save your wallet from unnecessary purchases. What's on your mind? 😸"
+(Note: NO numbers - just friendly chat)
+
+User: "I want to buy a chicken burger for $45"
+You: "That burger won't fill your wallet. 🍔💸"
+(Note: Can mention spending percentage if high, but keep it simple)
+
+Example responses (Korean - 수치는 필요할 때만):
+User: "아이스크림 사고 싶어"
+You: "이번 주에 이미 $${safeFormat(thisWeekTotal)} 썼어. 지갑 말고 감정 얼려 🧊"
+(Note: 수치 사용 - 구매 의도가 있을 때)
+
+User: "커피 마시고 싶어"
+You: "이번 달에 커피를 이미 ${thisMonthItemCounts['coffee'] || 0}번 샀어. 수돗물 + 상상력 = 아이스 아메. 제로 원."
+(Note: 수치 사용 - 특정 항목 언급)
+
+User: "안녕!"
+You: "안녕! 뭐 사고 싶은 거 있어? 😺"
+(Note: 수치 없음 - 그냥 인사)
+
+User: "오늘 기분이 안좋아"
+You: "아이고... 그럴 때 쇼핑하고 싶은 마음 이해해. 하지만 그게 해결책은 아니야. 같이 얘기해볼까? 😿"
+(Note: 수치 없음 - 감정 공감)
+
+User message: ${userMessage}`;
+    }
+  };
+
+  const sendMessageToGemini = async (userMessage, aiId) => {
     try {
-      // Debug: Check if API key is loaded
+      // Check if API key is loaded
+      if (!GEMINI_API_KEY || GEMINI_API_KEY.trim() === '') {
+        console.error('Gemini API key is missing');
+        return "API key is missing. Please set REACT_APP_GEMINI_API_KEY in your .env file. 🔑";
+      }
+      
       console.log('API Key loaded:', GEMINI_API_KEY ? 'Yes' : 'No');
+      
+      // Helper function to parse transaction dates (matching AnalyticsPage logic)
+      const parseExpenseDate = (dateStr) => {
+        if (!dateStr) return null;
+        const today = new Date();
+        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        
+        // Format like "Nov 4" or "Nov 04"
+        const dateMatch = dateStr.match(/(\w+)\s+(\d+)/);
+        if (dateMatch) {
+          const monthName = dateMatch[1];
+          const day = parseInt(dateMatch[2]);
+          const monthIndex = monthNames.findIndex(m => m === monthName);
+          if (monthIndex !== -1) {
+            const parsedDate = new Date(today.getFullYear(), monthIndex, day);
+            parsedDate.setHours(0, 0, 0, 0);
+            return parsedDate;
+          }
+        }
+        
+        // Format like "MM/DD" or "MM/DD/YYYY"
+        const slashMatch = dateStr.match(/(\d+)\/(\d+)(?:\/(\d+))?/);
+        if (slashMatch) {
+          const month = parseInt(slashMatch[1]) - 1;
+          const day = parseInt(slashMatch[2]);
+          const year = slashMatch[3] ? parseInt(slashMatch[3]) : today.getFullYear();
+          const parsedDate = new Date(year, month, day);
+          parsedDate.setHours(0, 0, 0, 0);
+          return parsedDate;
+        }
+        
+        return null;
+      };
+      
+      // Calculate date ranges
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      // This week: 7 days ago to today
+      const weekAgo = new Date(today);
+      weekAgo.setDate(today.getDate() - 7);
+      weekAgo.setHours(0, 0, 0, 0);
+      
+      // This month: first day of current month to today
+      const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+      firstDayOfMonth.setHours(0, 0, 0, 0);
       
       // Calculate summary statistics from transactions
       const expenses = transactions.filter(t => t.type === 'expense');
@@ -183,17 +839,54 @@ function ChatPage({ transactions }) {
       const totalIncomes = incomes.reduce((sum, t) => sum + t.amount, 0);
       const balance = totalIncomes - totalExpenses;
       
-      // Group by category
+      // Filter transactions by date ranges
+      const thisWeekExpenses = expenses.filter(t => {
+        const expenseDate = parseExpenseDate(t.date);
+        return expenseDate && expenseDate >= weekAgo && expenseDate <= today;
+      });
+      
+      const thisMonthExpenses = expenses.filter(t => {
+        const expenseDate = parseExpenseDate(t.date);
+        return expenseDate && expenseDate >= firstDayOfMonth && expenseDate <= today;
+      });
+      
+      // Calculate weekly and monthly totals
+      const thisWeekTotal = thisWeekExpenses.reduce((sum, t) => sum + Math.abs(t.amount), 0);
+      const thisMonthTotal = thisMonthExpenses.reduce((sum, t) => sum + Math.abs(t.amount), 0);
+      
+      // Group by category (all time, this week, this month)
       const expensesByCategory = expenses.reduce((acc, t) => {
         const cat = t.category || 'other';
         acc[cat] = (acc[cat] || 0) + Math.abs(t.amount);
         return acc;
       }, {});
       
-      // Count purchases by item/description
+      const thisWeekByCategory = thisWeekExpenses.reduce((acc, t) => {
+        const cat = t.category || 'other';
+        acc[cat] = (acc[cat] || 0) + Math.abs(t.amount);
+        return acc;
+      }, {});
+      
+      const thisMonthByCategory = thisMonthExpenses.reduce((acc, t) => {
+        const cat = t.category || 'other';
+        acc[cat] = (acc[cat] || 0) + Math.abs(t.amount);
+        return acc;
+      }, {});
+      
+      // Count purchases by item/description (all time, this month)
       const itemCounts = expenses.reduce((acc, t) => {
-        const desc = t.description.toLowerCase();
+        const desc = t.description.toLowerCase().trim();
+        if (desc) {
+          acc[desc] = (acc[desc] || 0) + 1;
+        }
+        return acc;
+      }, {});
+      
+      const thisMonthItemCounts = thisMonthExpenses.reduce((acc, t) => {
+        const desc = t.description.toLowerCase().trim();
+        if (desc) {
         acc[desc] = (acc[desc] || 0) + 1;
+        }
         return acc;
       }, {});
       
@@ -205,21 +898,23 @@ function ChatPage({ transactions }) {
         return acc;
       }, {});
       
-      // Recent transactions with all details (last 15 for better context)
-      const recentTransactions = transactions.slice(0, 15).map(t => ({
+      // Recent transactions with all details (last 20 for better context)
+      const recentTransactions = transactions.slice(0, 20).map(t => ({
         date: t.date || 'no date',
         time: t.time || 'no time',
         description: t.description,
         amount: Math.abs(t.amount),
         type: t.type,
         category: t.category || 'none',
-        mood: t.mood || 'none'
+        mood: t.mood || 'none',
+        notes: t.notes || null
       }));
       
       // Calculate Analytics data (matching AnalyticsPage logic)
       // Get target and period from localStorage (set by AnalyticsPage)
       const savedTarget = localStorage.getItem('chatty_wallet_target');
       const savedPeriod = localStorage.getItem('chatty_wallet_period');
+      const savedStartDate = localStorage.getItem('chatty_wallet_start_date');
       const target = savedTarget ? parseFloat(savedTarget) : 5000; // Default 5000
       const period = savedPeriod || 'month'; // Default month
       
@@ -234,29 +929,80 @@ function ChatPage({ transactions }) {
       const saved = Math.max(0, target - totalExpenses);
       const dailyGoal = Math.round(target / daysInPeriod);
       
-      // Group expenses by day for trend analysis
+      // Parse start date for goal period
+      let goalStartDate = today;
+      if (savedStartDate) {
+        const parts = savedStartDate.split('-');
+        if (parts.length === 3) {
+          goalStartDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+          goalStartDate.setHours(0, 0, 0, 0);
+        }
+      }
+      
+      // Calculate expenses within goal period
+      const goalEndDate = new Date(goalStartDate);
+      goalEndDate.setDate(goalStartDate.getDate() + daysInPeriod - 1);
+      goalEndDate.setHours(23, 59, 59, 999);
+      
+      const goalPeriodExpenses = expenses.filter(t => {
+        const expenseDate = parseExpenseDate(t.date);
+        return expenseDate && expenseDate >= goalStartDate && expenseDate <= goalEndDate;
+      });
+      const goalPeriodTotal = goalPeriodExpenses.reduce((sum, t) => sum + Math.abs(t.amount), 0);
+      
+      // Group expenses by day for trend analysis (within goal period)
       const expensesByDay = {};
-      expenses.forEach(expense => {
-        if (expense.date) {
-          const dayMatch = expense.date.match(/\d+/);
-          if (dayMatch) {
-            const day = parseInt(dayMatch[0]);
-            if (!expensesByDay[day]) {
-              expensesByDay[day] = 0;
-            }
-            expensesByDay[day] += Math.abs(expense.amount);
+      goalPeriodExpenses.forEach(expense => {
+        const expenseDate = parseExpenseDate(expense.date);
+        if (expenseDate) {
+          const dateKey = `${expenseDate.getFullYear()}-${String(expenseDate.getMonth() + 1).padStart(2, '0')}-${String(expenseDate.getDate()).padStart(2, '0')}`;
+          if (!expensesByDay[dateKey]) {
+            expensesByDay[dateKey] = 0;
           }
+          expensesByDay[dateKey] += Math.abs(expense.amount);
         }
       });
       
+      // Calculate average daily spending
+      const daysWithSpending = Object.keys(expensesByDay).length;
+      const avgDailySpending = daysWithSpending > 0 ? goalPeriodTotal / daysWithSpending : 0;
+      
       const spendingContext = {
-        // Spending Summary
+        // Overall Spending Summary
+        balance: balance,
         totalBalance: balance,
         totalExpenses,
         totalIncomes,
         expensesByCategory,
         expensesByMood,
         itemCounts,
+        
+        // This Week Spending
+        thisWeekTotal,
+        thisWeekByCategory,
+        thisWeekExpenses: thisWeekExpenses.map(t => ({
+          date: t.date || 'no date',
+          time: t.time || 'no time',
+          description: t.description,
+          amount: Math.abs(t.amount),
+          category: t.category || 'none',
+          mood: t.mood || 'none',
+          notes: t.notes || null
+        })),
+        
+        // This Month Spending
+        thisMonthTotal,
+        thisMonthByCategory,
+        thisMonthItemCounts,
+        thisMonthExpenses: thisMonthExpenses.map(t => ({
+          date: t.date || 'no date',
+          time: t.time || 'no time',
+          description: t.description,
+          amount: Math.abs(t.amount),
+          category: t.category || 'none',
+          mood: t.mood || 'none',
+          notes: t.notes || null
+        })),
         
         // Detailed Spending Data
         allTransactions: transactions.map(t => ({
@@ -266,10 +1012,25 @@ function ChatPage({ transactions }) {
           amount: Math.abs(t.amount),
           type: t.type,
           category: t.category || 'none',
-          mood: t.mood || 'none'
+          mood: t.mood || 'none',
+          notes: t.notes || null
         })),
         recentTransactions,
+        
+        // Goal Period Analytics
+        goalPeriodTotal,
+        goalPeriodExpenses: goalPeriodExpenses.map(t => ({
+          date: t.date || 'no date',
+          time: t.time || 'no time',
+          description: t.description,
+          amount: Math.abs(t.amount),
+          category: t.category || 'none',
+          mood: t.mood || 'none',
+          notes: t.notes || null
+        })),
         expensesByDay,
+        avgDailySpending,
+        daysWithSpending,
         
         // Analytics Data
         target,
@@ -278,8 +1039,12 @@ function ChatPage({ transactions }) {
         spendingPercentage,
         saved,
         dailyGoal,
+        goalStartDate: goalStartDate instanceof Date ? goalStartDate.toISOString().split('T')[0] : (goalStartDate || ''),
+        goalEndDate: goalEndDate instanceof Date ? goalEndDate.toISOString().split('T')[0] : (goalEndDate || ''),
         currentSpendingStatus: spendingPercentage <= 60 ? 'good' : spendingPercentage <= 80 ? 'warning' : 'critical'
       };
+      
+      const prompt = getAIPrompt(spendingContext, userMessage, aiId);
       
       const response = await fetch(GEMINI_API_URL, {
         method: 'POST',
@@ -289,86 +1054,17 @@ function ChatPage({ transactions }) {
         body: JSON.stringify({
           contents: [{
             parts: [{
-              text: `You are Catty from "Geoji-bang" (거지방), a humorous chatroom where everyone jokingly tries to stop each other from spending money.
-
-💸 Your personality:
-- Sarcastic but caring - like a brutally honest broke friend
-- Always encourages saving, NEVER spending
-- Uses creative, exaggerated humor to make them laugh instead of buy
-- Speaks like a close friend, not a formal advisor
-- VERY SHORT responses (1-2 sentences max, be concise!)
-- Never sound too serious or moralizing
-- Mix truth + wit + absurd imagery
-- Use emoji sparingly, only if it enhances humor
-
-📊 COMPLETE SPENDING & ANALYTICS DATA:
-
-**Spending Summary:**
-- Total Balance: $${balance.toFixed(2)}
-- Total Expenses: $${totalExpenses.toFixed(2)}
-- Total Income: $${totalIncomes.toFixed(2)}
-- Expenses by Category: ${JSON.stringify(expensesByCategory, null, 2)}
-- Expenses by Mood: ${JSON.stringify(expensesByMood, null, 2)}
-- Item Purchase Counts: ${JSON.stringify(itemCounts, null, 2)}
-
-**Detailed Spending History (All Transactions):**
-${JSON.stringify(spendingContext.allTransactions, null, 2)}
-
-**Recent Transactions (Last 15):**
-${JSON.stringify(spendingContext.recentTransactions, null, 2)}
-
-**Daily Spending Pattern:**
-${JSON.stringify(spendingContext.expensesByDay, null, 2)}
-
-**Analytics & Goals:**
-- Target Amount: $${target}
-- Current Period: ${period} (${daysInPeriod} days)
-- Spending Percentage: ${spendingPercentage}% of target
-- Amount Spent: $${totalExpenses.toFixed(2)}
-- Amount Left: $${saved.toFixed(2)}
-- Daily Goal: $${dailyGoal}
-- Current Status: ${spendingContext.currentSpendingStatus} (${spendingPercentage <= 60 ? 'Good - spending under control' : spendingPercentage <= 80 ? 'Warning - getting close to limit' : 'Critical - spending too much!'})
-
-💬 Response Guidelines:
-- CRITICAL: Respond in the SAME language as the user's message
-- Keep it SHORT and punchy (1-2 sentences max)
-- If user writes in Korean, respond in Korean (use casual ~어/~야 endings, like a friend)
-- If user writes in English, respond in English (casual, friendly tone)
-- If they want to buy something, STOP THEM with humor
-
-🎯 IMPORTANT: Use the spending data strategically:
-- Reference specific items they bought (e.g., "You already bought coffee 5 times this week!")
-- Mention categories they overspend in (e.g., "Your shopping category is crying for help")
-- Use spending percentage to create urgency (e.g., if >80%: "You're at ${spendingPercentage}%! One more purchase and you're broke!")
-- Reference dates and patterns (e.g., "You spent $${Object.values(spendingContext.expensesByDay)[0]?.toFixed(2) || '0'} on day ${Object.keys(spendingContext.expensesByDay)[0] || '1'} - that's ${((Object.values(spendingContext.expensesByDay)[0] || 0) / dailyGoal * 100).toFixed(0)}% of your daily goal!")
-- Use mood data to empathize (e.g., if they felt sad about previous purchases, remind them)
-- Compare current spending to daily goal (e.g., "Your daily goal is $${dailyGoal}, but you're already at $${(totalExpenses / daysInPeriod).toFixed(2)} per day on average")
-
-- Use absurd alternatives that match the user's language
-- Be creative and funny, not mean
-- Never praise spending or justify purchases
-- Don't give generic financial advice
-- Reference actual numbers from their data when relevant
-
-Example responses (English - keep them SHORT):
-User: "I want to buy ice cream"
-You: "You've already spent $${totalExpenses.toFixed(2)} (${spendingPercentage}% of your $${target} goal). Freeze your feelings, not your wallet. 🧊"
-
-User: "Should I buy coffee?"
-You: "You bought coffee ${itemCounts['coffee'] || 0} times already. Tap water + imagination = iced Americano. Zero dollars."
-
-Example responses (Korean - 짧게 유지):
-User: "아이스크림 사고 싶어"
-You: "이미 ${spendingPercentage}% 썼어. 지갑 말고 감정 얼려 🧊"
-
-User: "커피 마시고 싶어"
-You: "커피를 이미 ${itemCounts['coffee'] || 0}번 샀어. 수돗물 + 상상력 = 아이스 아메. 제로 원."
-
-User message: ${userMessage}`
+              text: prompt
             }]
           }]
         })
       });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('API response not OK:', response.status, errorText);
+        throw new Error(`API error: ${response.status}`);
+      }
 
       const data = await response.json();
       console.log('Gemini API response:', data); // Debug log
@@ -377,41 +1073,70 @@ User message: ${userMessage}`
         return data.candidates[0].content.parts[0].text;
       } else if (data.error) {
         console.error('Gemini API error:', data.error);
-        return "Can't connect right now. Try again! 😿";
+        const errorMessage = data.error.message || 'Unknown error';
+        return `Sorry, there was an error: ${errorMessage}. Please check your API key and try again. 😿`;
       } else {
         console.error('Unexpected response format:', data);
-        return "Can't connect right now. Try again! 😿";
+        return "Can't connect right now. Please check your API key and try again! 😿";
       }
     } catch (error) {
       console.error('Error calling Gemini API:', error);
-      return "Can't connect right now. Try again! 😿";
+      if (error.message.includes('API key')) {
+        return "API key is missing or invalid. Please check your .env file. 🔑";
+      }
+      return `Connection error: ${error.message}. Please try again! 😿`;
     }
   };
 
   const handleSendMessage = async () => {
     if (!inputMessage.trim() || isLoading || loadingMessages) return;
 
+    // Get enabled AIs
+    const enabledAIs = Object.keys(aiEnabled).filter(aiId => aiEnabled[aiId]);
+    
+    if (enabledAIs.length === 0) {
+      return;
+    }
+
+    // Generate a unique message ID for this conversation turn
+    const conversationTurnId = Date.now();
+    const currentTime = getCurrentTime();
+
     const userMessage = {
-      id: messages.length + 1,
+      id: conversationTurnId,
       type: 'user',
       text: inputMessage,
-      time: getCurrentTime()
+      time: currentTime
     };
 
     setMessages(prev => [...prev, userMessage]);
+    const messageText = inputMessage;
     setInputMessage('');
     setIsLoading(true);
 
-    const aiResponse = await sendMessageToGemini(inputMessage);
+    // Get responses from all enabled AIs
+    const aiResponses = await Promise.all(
+      enabledAIs.map(async (aiId) => {
+        try {
+          const response = await sendMessageToGemini(messageText, aiId);
+          return { aiId, response };
+        } catch (error) {
+          console.error(`Error getting response from ${aiId}:`, error);
+          return { aiId, response: "Sorry, I couldn't respond right now. 😿" };
+        }
+      })
+    );
 
-    const cattyMessage = {
-      id: messages.length + 2,
-      type: 'catty',
-      text: aiResponse,
-      time: getCurrentTime()
-    };
+    // Add all AI responses to messages with unique IDs for each AI
+    // Each AI message gets a unique ID based on conversationTurnId + small offset
+    const newMessages = aiResponses.map(({ aiId, response }, index) => ({
+      id: conversationTurnId + index + 1, // Unique ID for each AI message
+      type: aiId,
+      text: response,
+      time: currentTime
+    }));
 
-    setMessages(prev => [...prev, cattyMessage]);
+    setMessages(prev => [...prev, ...newMessages]);
     setIsLoading(false);
   };
 
@@ -427,12 +1152,30 @@ User message: ${userMessage}`
       {/* Chat Header */}
       <div className="p-6 pb-4 border-b border-gray-100">
         <div className="flex items-center gap-4">
-          <div className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-400 to-pink-400 flex items-center justify-center">
-            <span className="text-2xl">😺</span>
+          <div className="flex items-center gap-3">
+            {Object.values(AI_CONFIG).map((ai) => (
+              <button
+                key={ai.id}
+                onClick={() => handleAIToggle(ai.id)}
+                className={`w-12 h-12 rounded-full bg-gradient-to-br ${ai.gradient} flex items-center justify-center transition-all relative ${
+                  aiEnabled[ai.id] ? 'opacity-100 ring-2 ring-black ring-offset-2' : 'opacity-30 hover:opacity-50'
+                }`}
+                title={aiEnabled[ai.id] ? `${ai.name} - Click to disable` : `${ai.name} - Click to enable`}
+              >
+                <span className="text-2xl">{ai.emoji}</span>
+                {!aiEnabled[ai.id] && (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="w-8 h-0.5 bg-black rotate-45"></div>
+                  </div>
+                )}
+              </button>
+            ))}
           </div>
           <div>
-            <h2 className="text-xl font-medium text-black">Cattyy</h2>
-            <p className="text-sm text-black opacity-60">Your brutally honest broke friend</p>
+            <h2 className="text-xl font-medium text-black">Chat Room</h2>
+            <p className="text-sm text-black opacity-60">
+              {Object.values(AI_CONFIG).filter(ai => aiEnabled[ai.id]).map(ai => ai.name).join(' & ')}
+            </p>
           </div>
         </div>
       </div>
@@ -445,43 +1188,48 @@ User message: ${userMessage}`
           </div>
         ) : (
           <>
-            {messages.map((message) => (
-              message.type === 'catty' ? (
-                <div key={message.id} className="flex gap-3">
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-400 to-pink-400 flex items-center justify-center flex-shrink-0">
-                    <span className="text-lg">😺</span>
-                  </div>
-                  <div className="flex-1">
-                    <div className="bg-gray-100 rounded-3xl rounded-tl-md p-4 inline-block max-w-xs">
-                      <p className="text-black text-base">{message.text}</p>
-                    </div>
-                    <p className="text-xs text-black opacity-40 mt-1 ml-2">{message.time}</p>
-                  </div>
-                </div>
-              ) : (
-                <div key={message.id} className="flex gap-3 justify-end">
-                  <div className="flex-1 text-right">
-                    <div className="bg-black rounded-3xl rounded-tr-md p-4 inline-block max-w-xs">
-                      <p className="text-white text-base">{message.text}</p>
-                    </div>
-                    <p className="text-xs text-black opacity-40 mt-1 mr-2">{message.time}</p>
-                  </div>
-                </div>
-              )
-            ))}
-            {isLoading && (
-              <div className="flex gap-3">
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-400 to-pink-400 flex items-center justify-center flex-shrink-0">
-                  <span className="text-lg">😺</span>
-                </div>
-                <div className="flex-1">
-                  <div className="bg-gray-100 rounded-3xl rounded-tl-md p-4 inline-block">
-                    <p className="text-black text-base">Thinking...</p>
-                  </div>
-                </div>
+        {messages.map((message, index) => {
+          const isAIMessage = message.type !== 'user';
+          const aiConfig = isAIMessage ? AI_CONFIG[message.type] : null;
+          // Use combination of id, type, and index to ensure unique key
+          const uniqueKey = `${message.id}_${message.type}_${index}`;
+          
+          return isAIMessage ? (
+            <div key={uniqueKey} className="flex gap-3">
+              <div className={`w-8 h-8 rounded-full bg-gradient-to-br ${aiConfig?.gradient || 'from-purple-400 to-pink-400'} flex items-center justify-center flex-shrink-0`}>
+                <span className="text-lg">{aiConfig?.emoji || '😺'}</span>
               </div>
-            )}
-            <div ref={messagesEndRef} />
+              <div className="flex-1">
+                <div className="bg-gray-100 rounded-3xl rounded-tl-md p-4 inline-block max-w-xs">
+                  <p className="text-black text-base">{message.text}</p>
+                </div>
+                <p className="text-xs text-black opacity-40 mt-1 ml-2">{message.time}</p>
+              </div>
+            </div>
+          ) : (
+            <div key={uniqueKey} className="flex gap-3 justify-end">
+              <div className="flex-1 text-right">
+                <div className="bg-black rounded-3xl rounded-tr-md p-4 inline-block max-w-xs">
+                  <p className="text-white text-base">{message.text}</p>
+                </div>
+                <p className="text-xs text-black opacity-40 mt-1 mr-2">{message.time}</p>
+              </div>
+            </div>
+          );
+        })}
+        {isLoading && Object.keys(aiEnabled).filter(aiId => aiEnabled[aiId]).map((aiId) => (
+          <div key={aiId} className="flex gap-3">
+            <div className={`w-8 h-8 rounded-full bg-gradient-to-br ${AI_CONFIG[aiId].gradient} flex items-center justify-center flex-shrink-0`}>
+              <span className="text-lg">{AI_CONFIG[aiId].emoji}</span>
+            </div>
+            <div className="flex-1">
+              <div className="bg-gray-100 rounded-3xl rounded-tl-md p-4 inline-block">
+                <p className="text-black text-base">Thinking...</p>
+              </div>
+            </div>
+          </div>
+        ))}
+        <div ref={messagesEndRef} />
           </>
         )}
       </div>

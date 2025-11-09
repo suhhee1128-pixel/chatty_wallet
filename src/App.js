@@ -50,7 +50,8 @@ function AppContent() {
         amount: parseFloat(t.amount),
         type: t.type,
         category: t.category,
-        mood: t.mood
+        mood: t.mood,
+        notes: t.notes || null
       }));
 
       setTransactions(formattedTransactions);
@@ -86,7 +87,8 @@ function AppContent() {
               amount: Math.abs(t.amount),
               type: t.type,
               category: t.category,
-              mood: t.mood
+              mood: t.mood,
+              notes: t.notes || null
             }));
 
             const { error } = await supabase
@@ -153,7 +155,8 @@ function AppContent() {
                 amount: Math.abs(lastTransaction.amount),
                 type: lastTransaction.type,
                 category: lastTransaction.category,
-                mood: lastTransaction.mood
+                mood: lastTransaction.mood,
+                notes: lastTransaction.notes || null
               });
 
             if (error) throw error;

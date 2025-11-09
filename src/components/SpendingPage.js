@@ -1,16 +1,25 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { useAuth } from '../contexts/AuthContext';
+import { loadUserSettings, saveUserSettings, migrateSettingsFromLocalStorage } from '../lib/userSettings';
+import { supabase } from '../lib/supabase';
 
 const STORAGE_KEY_CATEGORIES = 'chatty_wallet_expense_categories';
 const DEFAULT_CATEGORIES = ['shopping', 'food', 'transport', 'entertainment'];
 
 function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
+  const { user } = useAuth();
+  const [loadingSettings, setLoadingSettings] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [transactionType, setTransactionType] = useState('expense');
   const [description, setDescription] = useState('');
   const [amount, setAmount] = useState('');
+  const [notes, setNotes] = useState('');
   const [category, setCategory] = useState('shopping');
   const [mood, setMood] = useState(null);
+  const [summaryPeriod, setSummaryPeriod] = useState('day');
+  const [showSummaryMenu, setShowSummaryMenu] = useState(false);
+  const summaryMenuRef = useRef(null);
   const [expenseCategories, setExpenseCategories] = useState(() => {
     const saved = localStorage.getItem(STORAGE_KEY_CATEGORIES);
     if (saved) {
@@ -67,15 +76,113 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
       setExpenseCategories(categoriesToUse);
     }
     
-    // Save to localStorage
-    localStorage.setItem(STORAGE_KEY_CATEGORIES, JSON.stringify(categoriesToUse));
+    // Save to localStorage only if not logged in (fallback)
+    if (!user) {
+      localStorage.setItem(STORAGE_KEY_CATEGORIES, JSON.stringify(categoriesToUse));
+    }
     
     // Update selected category if needed
     if (!categoriesToUse.includes(category)) {
       setCategory(categoriesToUse[0] || 'shopping');
     }
-  }, [expenseCategories, category]);
-  
+  }, [expenseCategories, category, user]);
+
+  // Load categories from Supabase on mount
+  useEffect(() => {
+    const loadCategories = async () => {
+      if (user) {
+        try {
+          const { data, error } = await supabase
+            .from('user_categories')
+            .select('category_name')
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: true });
+
+          if (error) throw error;
+
+          if (data && data.length > 0) {
+            const categories = data.map(c => c.category_name);
+            // Merge with default categories, removing duplicates
+            const allCategories = [...new Set([...DEFAULT_CATEGORIES, ...categories])];
+            setExpenseCategories(allCategories);
+          } else {
+            // No custom categories, use defaults
+            setExpenseCategories(DEFAULT_CATEGORIES);
+          }
+        } catch (error) {
+          console.error('Error loading categories:', error);
+          // Fallback to localStorage
+          const saved = localStorage.getItem(STORAGE_KEY_CATEGORIES);
+          if (saved) {
+            try {
+              const parsed = JSON.parse(saved);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                setExpenseCategories(parsed);
+              }
+            } catch (e) {
+              setExpenseCategories(DEFAULT_CATEGORIES);
+            }
+          }
+        }
+      }
+    };
+    
+    loadCategories();
+  }, [user]);
+
+  // Load summaryPeriod from Supabase on mount
+  useEffect(() => {
+    const loadSettings = async () => {
+      if (user) {
+        // Migrate from localStorage first
+        await migrateSettingsFromLocalStorage(user.id);
+        
+        // Load from Supabase
+        const settings = await loadUserSettings(user.id);
+        if (settings && settings.spending_summary_period) {
+          setSummaryPeriod(settings.spending_summary_period);
+        }
+        setLoadingSettings(false);
+      } else {
+        // Fallback to localStorage if not logged in
+        const saved = localStorage.getItem('chatty_wallet_summary_period');
+        if (saved) setSummaryPeriod(saved);
+        setLoadingSettings(false);
+      }
+    };
+    
+    loadSettings();
+  }, [user]);
+
+  // Save summaryPeriod to Supabase whenever it changes
+  useEffect(() => {
+    if (loadingSettings) return; // Don't save during initial load
+    
+    const saveSettings = async () => {
+      if (user) {
+        await saveUserSettings(user.id, {
+          spending_summary_period: summaryPeriod
+        });
+      } else {
+        // Fallback to localStorage if not logged in
+        localStorage.setItem('chatty_wallet_summary_period', summaryPeriod);
+      }
+    };
+    
+    saveSettings();
+  }, [summaryPeriod, user, loadingSettings]);
+
+  useEffect(() => {
+    if (!showSummaryMenu) return;
+    const handleClickOutside = (event) => {
+      if (summaryMenuRef.current && !summaryMenuRef.current.contains(event.target)) {
+        setShowSummaryMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showSummaryMenu]);
+
   const getCategoryIcon = (category) => {
     const icons = {
       shopping: (
@@ -139,7 +246,8 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
       amount: transactionType === 'income' ? parseFloat(amount) : -parseFloat(amount),
       type: transactionType,
       category: transactionType === 'income' ? 'income' : category,
-      mood: transactionType === 'expense' ? mood : null
+      mood: transactionType === 'expense' ? mood : null,
+      notes: notes.trim() || null
     };
     
     // Update local state immediately
@@ -147,50 +255,250 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
     setShowModal(false);
     setDescription('');
     setAmount('');
+    setNotes('');
     setCategory(expenseCategories[0] || 'shopping');
     setMood(null);
   };
 
-  const handleAddCategory = () => {
+  const handleAddCategory = async () => {
     const trimmedName = newCategoryName.trim().toLowerCase();
     if (!trimmedName || expenseCategories.includes(trimmedName)) return;
+    
+    // Update local state
     setExpenseCategories([...expenseCategories, trimmedName]);
     setNewCategoryName('');
-  };
-
-  const handleDeleteCategory = (catToDelete) => {
-    if (expenseCategories.length <= 1) return; // Keep at least one category
-    setExpenseCategories(expenseCategories.filter(cat => cat !== catToDelete));
-    if (category === catToDelete) {
-      setCategory(expenseCategories.filter(cat => cat !== catToDelete)[0]);
+    
+    // Save to Supabase if logged in
+    if (user) {
+      try {
+        // Check if category already exists (might be a default category)
+        const { data: existing } = await supabase
+          .from('user_categories')
+          .select('id')
+          .eq('user_id', user.id)
+          .eq('category_name', trimmedName)
+          .maybeSingle();
+        
+        if (!existing) {
+          // Only insert if it's not a default category (defaults are not in DB)
+          if (!DEFAULT_CATEGORIES.includes(trimmedName)) {
+            const { error } = await supabase
+              .from('user_categories')
+              .insert({
+                user_id: user.id,
+                category_name: trimmedName
+              });
+            
+            if (error) throw error;
+          }
+        }
+      } catch (error) {
+        console.error('Error saving category to Supabase:', error);
+        // Fallback to localStorage
+        localStorage.setItem(STORAGE_KEY_CATEGORIES, JSON.stringify([...expenseCategories, trimmedName]));
+      }
+    } else {
+      // Fallback to localStorage if not logged in
+      localStorage.setItem(STORAGE_KEY_CATEGORIES, JSON.stringify([...expenseCategories, trimmedName]));
     }
   };
 
-  const handleEditCategory = (oldCat, newCat) => {
+  const handleDeleteCategory = async (catToDelete) => {
+    if (expenseCategories.length <= 1) return; // Keep at least one category
+    
+    // Don't allow deleting default categories
+    if (DEFAULT_CATEGORIES.includes(catToDelete)) {
+      alert('Default categories cannot be deleted.');
+      return;
+    }
+    
+    // Update local state
+    const newCategories = expenseCategories.filter(cat => cat !== catToDelete);
+    setExpenseCategories(newCategories);
+    if (category === catToDelete) {
+      setCategory(newCategories[0]);
+    }
+    
+    // Delete from Supabase if logged in
+    if (user) {
+      try {
+        const { error } = await supabase
+          .from('user_categories')
+          .delete()
+          .eq('user_id', user.id)
+          .eq('category_name', catToDelete);
+        
+        if (error) throw error;
+      } catch (error) {
+        console.error('Error deleting category from Supabase:', error);
+        // Fallback to localStorage
+        localStorage.setItem(STORAGE_KEY_CATEGORIES, JSON.stringify(newCategories));
+      }
+    } else {
+      // Fallback to localStorage if not logged in
+      localStorage.setItem(STORAGE_KEY_CATEGORIES, JSON.stringify(newCategories));
+    }
+  };
+
+  const handleEditCategory = async (oldCat, newCat) => {
     const trimmedNew = newCat.trim().toLowerCase();
     if (!trimmedNew || (trimmedNew !== oldCat && expenseCategories.includes(trimmedNew))) return;
     
-    // Update category in transactions
+    // Don't allow editing default categories
+    if (DEFAULT_CATEGORIES.includes(oldCat)) {
+      alert('Default categories cannot be edited.');
+      return;
+    }
+    
+    // Update category in transactions (local state)
     const updatedTransactions = transactions.map(t => 
       t.category === oldCat ? { ...t, category: trimmedNew } : t
     );
     setTransactions(updatedTransactions);
     
-    // Update categories list
+    // Update categories list (local state)
     setExpenseCategories(expenseCategories.map(cat => cat === oldCat ? trimmedNew : cat));
     if (category === oldCat) {
       setCategory(trimmedNew);
     }
     setEditingCategory(null);
+    
+    // Update in Supabase if logged in
+    if (user) {
+      try {
+        // Update transactions with this category
+        const transactionsToUpdate = transactions.filter(t => t.category === oldCat && t.id);
+        if (transactionsToUpdate.length > 0) {
+          for (const txn of transactionsToUpdate) {
+            const { error } = await supabase
+              .from('transactions')
+              .update({ category: trimmedNew })
+              .eq('id', txn.id)
+              .eq('user_id', user.id);
+            
+            if (error) throw error;
+          }
+        }
+        
+        // Update user_categories: delete old, insert new (if not default)
+        if (!DEFAULT_CATEGORIES.includes(trimmedNew)) {
+          // Delete old category
+          await supabase
+            .from('user_categories')
+            .delete()
+            .eq('user_id', user.id)
+            .eq('category_name', oldCat);
+          
+          // Insert new category
+          const { error } = await supabase
+            .from('user_categories')
+            .insert({
+              user_id: user.id,
+              category_name: trimmedNew
+            });
+          
+          if (error) throw error;
+        } else {
+          // If new name is a default category, just delete the old custom one
+          await supabase
+            .from('user_categories')
+            .delete()
+            .eq('user_id', user.id)
+            .eq('category_name', oldCat);
+        }
+      } catch (error) {
+        console.error('Error updating category in Supabase:', error);
+        // Fallback to localStorage
+        localStorage.setItem(STORAGE_KEY_CATEGORIES, JSON.stringify(expenseCategories.map(cat => cat === oldCat ? trimmedNew : cat)));
+      }
+    } else {
+      // Fallback to localStorage if not logged in
+      localStorage.setItem(STORAGE_KEY_CATEGORIES, JSON.stringify(expenseCategories.map(cat => cat === oldCat ? trimmedNew : cat)));
+    }
   };
 
+  const parseTransactionDate = (dateStr) => {
+    if (!dateStr) return null;
+    const baseYear = new Date().getFullYear();
+    let parsed = new Date(`${dateStr} ${baseYear}`);
+
+    if (isNaN(parsed)) {
+      parsed = new Date(dateStr);
+    }
+
+    if (isNaN(parsed)) {
+      const parts = dateStr.split('/');
+      if (parts.length >= 2) {
+        const month = parseInt(parts[0], 10) - 1;
+        const day = parseInt(parts[1], 10);
+        const year = parts.length >= 3 ? parseInt(parts[2], 10) : baseYear;
+        if (!isNaN(month) && !isNaN(day) && !isNaN(year)) {
+          parsed = new Date(year, month, day);
+        }
+      }
+    }
+
+    if (isNaN(parsed)) return null;
+    parsed.setHours(0, 0, 0, 0);
+    return parsed;
+  };
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const getPeriodRange = () => {
+    if (summaryPeriod === 'day') {
+      return { start: new Date(today), end: new Date(today) };
+    }
+    if (summaryPeriod === 'week') {
+      const start = new Date(today);
+      start.setDate(start.getDate() - 6);
+      return { start, end: new Date(today) };
+    }
+    const start = new Date(today.getFullYear(), today.getMonth(), 1);
+    const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    end.setHours(0, 0, 0, 0);
+    return { start, end };
+  };
+
+  const { start: periodStart, end: periodEnd } = getPeriodRange();
+
+  const filteredTransactions = transactions.filter(t => {
+    const txDate = parseTransactionDate(t.date);
+    if (!txDate) return false;
+    return txDate >= periodStart && txDate <= periodEnd;
+  });
+
+  const handleSelectPeriod = (key) => {
+    setSummaryPeriod(key);
+    setShowSummaryMenu(false);
+  };
+
+  const formatRangeLabel = (date) => {
+    if (!(date instanceof Date)) return '';
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  const periodLabel = (() => {
+    if (!periodStart || !periodEnd) return '';
+    if (summaryPeriod === 'month') {
+      return periodStart.toLocaleDateString('en-US', { month: 'long' });
+    }
+    const startLabel = formatRangeLabel(periodStart);
+    const endLabel = formatRangeLabel(periodEnd);
+    if (summaryPeriod === 'day' || startLabel === endLabel) {
+      return startLabel;
+    }
+    return `${startLabel} - ${endLabel}`;
+  })();
+
   // Calculate earnings from transactions
-  const earnings = transactions
+  const earnings = filteredTransactions
     .filter(t => t.type === 'income')
     .reduce((sum, t) => sum + Math.abs(t.amount), 0);
   
   // Calculate total expenses only
-  const totalExpenses = transactions
+  const totalExpenses = filteredTransactions
     .filter(t => t.type === 'expense')
     .reduce((sum, t) => sum + Math.abs(t.amount), 0);
   
@@ -225,6 +533,39 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
               return `${year}/${month}/${day}`;
             })()}
           </h1>
+        </div>
+        
+        <div className="mb-3 text-sm text-gray-500 uppercase tracking-wide flex items-center gap-2" style={{ marginTop: '-8px' }}>
+          <div className="relative" ref={summaryMenuRef}>
+            <button
+              type="button"
+              onClick={() => setShowSummaryMenu(prev => !prev)}
+              className="flex items-center gap-1 text-sm font-medium text-black transition"
+              style={{ marginTop: '-6px', padding: '4px 0', background: 'transparent', border: 'none' }}
+            >
+              <span>{periodLabel}</span>
+              <svg className="w-3 h-3" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M0.833496 1L5.00016 5.16667L9.16683 1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            {showSummaryMenu && (
+              <div className="absolute z-20 mt-2 w-44 rounded-xl border border-gray-200 bg-white shadow-lg overflow-hidden">
+                {[
+                  { key: 'day', label: 'Today' },
+                  { key: 'week', label: '7 Days' },
+                  { key: 'month', label: 'This Month' }
+                ].map(option => (
+                  <button
+                    key={option.key}
+                    onClick={() => handleSelectPeriod(option.key)}
+                    className={`w-full text-left px-4 py-2 text-sm ${summaryPeriod === option.key ? 'bg-black text-white' : 'text-gray-700 hover:bg-gray-100'}`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         
         {/* Main Amount Display */}
@@ -284,61 +625,69 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
         
         {/* Transaction List */}
         <div className="space-y-3">
-          {transactions.map((transaction) => (
-            <div 
-              key={transaction.id} 
-              className="transaction-card group"
-              style={{
-                background: '#F8F8F8',
-                borderRadius: '16px',
-                padding: '16px',
-                position: 'relative'
-              }}
-            >
-              {/* Delete button - center right */}
-              <button
-                onClick={() => {
-                  if (onDeleteTransaction) {
-                    onDeleteTransaction(transaction.id);
-                  } else {
-                    setTransactions(transactions.filter(t => t.id !== transaction.id));
-                  }
+          {filteredTransactions.length === 0 ? (
+            <p className="text-sm text-gray-500 text-center py-6">No transactions in this period.</p>
+          ) : (
+            filteredTransactions.map((transaction) => (
+              <div
+                key={transaction.id}
+                className="transaction-card group"
+                style={{
+                  background: '#F8F8F8',
+                  borderRadius: '16px',
+                  padding: '16px',
+                  position: 'relative'
                 }}
-                className="absolute right-3 opacity-0 group-hover:opacity-100 transition-opacity p-1 text-gray-400 hover:text-red-500"
-                style={{ top: '50%', transform: 'translateY(-50%)' }}
-                title="Delete"
               >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
-                </svg>
-              </button>
+                {/* Delete button - center right */}
+                <button
+                  onClick={() => {
+                    if (onDeleteTransaction) {
+                      onDeleteTransaction(transaction.id);
+                    } else {
+                      setTransactions(transactions.filter(t => t.id !== transaction.id));
+                    }
+                  }}
+                  className="absolute right-3 opacity-0 group-hover:opacity-100 transition-opacity p-1 text-gray-400 hover:text-red-500"
+                  style={{ top: '50%', transform: 'translateY(-50%)' }}
+                  title="Delete"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                  </svg>
+                </button>
 
-              <div className="flex justify-between items-start">
-                {/* Left: Title and Category */}
-                <div className="flex-1 min-w-0 pr-4">
-                  <div className="flex items-center gap-2 mb-1">
-                    <h3 className="text-base font-semibold text-black">{transaction.description}</h3>
-                    {transaction.mood && (
-                      <span className="text-lg">{transaction.mood === 'happy' ? '🙂' : transaction.mood === 'neutral' ? '😐' : '🫠'}</span>
+                <div className="flex justify-between items-start">
+                  {/* Left: Title and Category */}
+                  <div className="flex-1 min-w-0 pr-4">
+                    <div className="flex items-center gap-2 mb-1">
+                      <h3 className="text-base font-semibold text-black">{transaction.description}</h3>
+                      {transaction.mood && (
+                        <span className="text-lg">{transaction.mood === 'happy' ? '🙂' : transaction.mood === 'neutral' ? '😐' : '🫠'}</span>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      {transaction.type === 'expense' ? 'Expense' : 'Income'} / {String(transaction.category).charAt(0).toUpperCase() + String(transaction.category).slice(1)}
+                    </p>
+                    {transaction.notes && (
+                      <p className="text-xs text-gray-400 mt-1 italic">
+                        {transaction.notes}
+                      </p>
                     )}
                   </div>
-                  <p className="text-xs text-gray-500">
-                    {transaction.type === 'expense' ? 'Expense' : 'Income'} / {String(transaction.category).charAt(0).toUpperCase() + String(transaction.category).slice(1)}
-                  </p>
-                </div>
 
-                {/* Right: Amount and Date/Time */}
-                <div className="flex flex-col items-end">
-                  <p className={`text-base font-bold mb-1 ${transaction.type === 'expense' ? 'amount-red' : 'amount-green'}`}>
-                    ${Math.abs(transaction.amount)}
-                  </p>
-                  <p className="text-xs text-gray-400">
-                    {transaction.time || '00:00'} {transaction.date || 'Jan 1'}
-                  </p>
+                  <div className="flex flex-col items-end">
+                    <p className={`text-base font-bold mb-1 ${transaction.type === 'expense' ? 'amount-red' : 'amount-green'}`}>
+                      ${Math.abs(transaction.amount)}
+                    </p>
+                    <p className="text-xs text-gray-400">
+                      {transaction.time || '00:00'} {transaction.date || 'Jan 1'}
+                    </p>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            ))
+          )}
         </div>
       </div>
 
@@ -373,9 +722,18 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
                   step="0.01"
                 />
               </div>
+              <div>
+                <textarea
+                  placeholder="Additional notes (optional)"
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  className="w-full bg-gray-100 rounded-lg px-4 py-4 text-black placeholder-gray-400 border-none outline-none text-base resize-none"
+                  rows="3"
+                />
+              </div>
               {transactionType === 'expense' && (
                 <>
-                  <div>
+                <div>
                     <div className="flex justify-between items-center mb-2">
                       <label className="text-sm text-black opacity-60 block">Category</label>
                       <button
@@ -443,15 +801,15 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
                           onClick={() => setMood(m.value)}
                           className={`flex-1 py-4 rounded-lg font-medium text-2xl transition ${
                             mood === m.value
-                              ? 'bg-black text-white'
-                              : 'bg-gray-100 text-black hover:bg-gray-200'
-                          }`}
-                        >
+                            ? 'bg-black text-white'
+                            : 'bg-gray-100 text-black hover:bg-gray-200'
+                        }`}
+                      >
                           {m.emoji}
-                        </button>
-                      ))}
-                    </div>
+                      </button>
+                    ))}
                   </div>
+                </div>
                 </>
               )}
               <div className="flex gap-3">
