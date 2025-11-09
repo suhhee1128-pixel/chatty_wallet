@@ -19,6 +19,12 @@ function AnalyticsPage({ transactions = [], onDateClick }) {
   const [startDateInput, setStartDateInput] = useState('');
   const [analyticsTab, setAnalyticsTab] = useState('monthly');
   
+  // State for calendar month navigation
+  const todayDate = new Date();
+  todayDate.setHours(0, 0, 0, 0);
+  const [displayMonth, setDisplayMonth] = useState(todayDate.getMonth());
+  const [displayYear, setDisplayYear] = useState(todayDate.getFullYear());
+  
   // Load settings from Supabase on mount
   useEffect(() => {
     const loadSettings = async () => {
@@ -252,13 +258,13 @@ function AnalyticsPage({ transactions = [], onDateClick }) {
   }, [yearsAvailable, selectedYear]);
 
   const monthOptions = useMemo(() => {
-    const maxAllowedMonth = selectedYear < defaultYear ? 11 : Math.min(defaultMonth, 11);
+    // Always show all 12 months (0-11: January to December)
     const options = [];
-    for (let month = 0; month <= maxAllowedMonth; month += 1) {
+    for (let month = 0; month <= 11; month += 1) {
       options.push(month);
     }
     return options;
-  }, [selectedYear, defaultYear, defaultMonth]);
+  }, []);
 
   useEffect(() => {
     if (monthOptions.length === 0) {
@@ -271,7 +277,7 @@ function AnalyticsPage({ transactions = [], onDateClick }) {
 
   const maxMonthlyTotal = monthlyData.reduce((max, item) => Math.max(max, item.total), 0);
 
-
+  // Get today's date for comparisons
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
@@ -295,11 +301,30 @@ function AnalyticsPage({ transactions = [], onDateClick }) {
   calendarEndDate.setDate(selectedStartDate.getDate() + daysInPeriod - 1);
   calendarEndDate.setHours(23, 59, 59, 999); // Set to end of day for inclusive comparison
   
-  // Generate array of dates for THIS MONTH (always show current month calendar)
-  const currentMonth = today.getMonth();
-  const currentYear = today.getFullYear();
+  // Generate array of dates for DISPLAYED MONTH (can navigate to previous/next months)
+  const currentMonth = displayMonth;
+  const currentYear = displayYear;
   const currentMonthLabel = new Date(currentYear, currentMonth).toLocaleString('en-US', { month: 'long' });
   const daysInCurrentMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+  
+  // Navigation functions
+  const handlePreviousMonth = () => {
+    if (displayMonth === 0) {
+      setDisplayMonth(11);
+      setDisplayYear(displayYear - 1);
+    } else {
+      setDisplayMonth(displayMonth - 1);
+    }
+  };
+  
+  const handleNextMonth = () => {
+    if (displayMonth === 11) {
+      setDisplayMonth(0);
+      setDisplayYear(displayYear + 1);
+    } else {
+      setDisplayMonth(displayMonth + 1);
+    }
+  };
   
   const dateArray = [];
   for (let day = 1; day <= daysInCurrentMonth; day++) {
@@ -322,30 +347,43 @@ function AnalyticsPage({ transactions = [], onDateClick }) {
         const monthName = dateMatch[1];
         const day = parseInt(dateMatch[2]);
         const monthIndex = monthNames.findIndex(m => m === monthName);
-        if (monthIndex !== -1 && monthIndex === currentMonth) {
-          // Only match if the month matches the current calendar month
-          // Use currentYear (the year displayed in the calendar)
-          expenseDate = new Date(currentYear, monthIndex, day);
+        if (monthIndex !== -1) {
+          // Match expenses from any month, but prioritize the displayed month/year
+          // Try to determine the year - if month is in the past relative to today, use current year
+          // Otherwise, check if it matches the displayed month
+          let expenseYear = currentYear;
+          if (monthIndex === currentMonth) {
+            expenseYear = currentYear;
+          } else {
+            // For other months, try to infer the year
+            const todayMonth = new Date().getMonth();
+            const todayYear = new Date().getFullYear();
+            if (monthIndex <= todayMonth) {
+              expenseYear = currentYear; // Same year
+            } else {
+              expenseYear = currentYear - 1; // Previous year
+            }
+          }
+          expenseDate = new Date(expenseYear, monthIndex, day);
           expenseDate.setHours(0, 0, 0, 0);
         }
       }
       
       // Also try MM/DD format (e.g., "11/07" or "11/7")
       if (!expenseDate) {
-        const mmddMatch = expense.date.match(/(\d{1,2})\/(\d{1,2})/);
+        const mmddMatch = expense.date.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?/);
         if (mmddMatch) {
           const month = parseInt(mmddMatch[1]) - 1; // 0-indexed
           const day = parseInt(mmddMatch[2]);
-          if (month === currentMonth) {
-            // Only match if the month matches the current calendar month
-            expenseDate = new Date(currentYear, month, day);
-            expenseDate.setHours(0, 0, 0, 0);
-          }
+          const year = mmddMatch[3] ? parseInt(mmddMatch[3]) : currentYear;
+          expenseDate = new Date(year, month, day);
+          expenseDate.setHours(0, 0, 0, 0);
         }
       }
       
       // If we have a date, format it as YYYY-MM-DD for matching
-      if (expenseDate) {
+      // Only include expenses from the displayed month/year
+      if (expenseDate && expenseDate.getMonth() === currentMonth && expenseDate.getFullYear() === currentYear) {
         const dateKey = `${expenseDate.getFullYear()}-${String(expenseDate.getMonth() + 1).padStart(2, '0')}-${String(expenseDate.getDate()).padStart(2, '0')}`;
         if (!expensesByDate[dateKey]) {
           expensesByDate[dateKey] = 0;
@@ -427,10 +465,9 @@ function AnalyticsPage({ transactions = [], onDateClick }) {
   // Get the first day of the month to align calendar properly
   const firstDayOfMonth = new Date(currentYear, currentMonth, 1);
   const firstDayWeekday = firstDayOfMonth.getDay(); // 0 = Sunday, 1 = Monday, etc.
-  const mondayBasedFirstDay = firstDayWeekday === 0 ? 6 : firstDayWeekday - 1; // Convert to Monday = 0
 
-  // Weekday labels
-  const weekDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  // Weekday labels (Sunday first)
+  const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
   // Helper functions
   const getColorClass = (day) => {
@@ -447,6 +484,16 @@ function AnalyticsPage({ transactions = [], onDateClick }) {
     }
   };
   
+  const getBackgroundColor = (level) => {
+    switch(level) {
+      case 'future': return '#F7F3F1';
+      case 'exceeded': return '#F35DC8';
+      case 'good': return '#A4F982';
+      case 'inactive': return '#E5E7EB';
+      default: return '#E5E7EB';
+    }
+  };
+  
   const getTextColor = (day) => {
     const level = activityData[day];
     if (level === 'future' || level === 'inactive') {
@@ -458,8 +505,8 @@ function AnalyticsPage({ transactions = [], onDateClick }) {
   const renderCalendar = () => {
     const days = [];
     
-    // Add empty cells for days before the first day of the month
-    for (let i = 0; i < mondayBasedFirstDay; i++) {
+    // Add empty cells for days before the first day of the month (Sunday-based)
+    for (let i = 0; i < firstDayWeekday; i++) {
       days.push(
         <div key={`empty-${i}`} className="flex flex-col items-center justify-center">
           <div className="w-10 h-10 rounded-full"></div>
@@ -475,10 +522,24 @@ function AnalyticsPage({ transactions = [], onDateClick }) {
       // Compare dates using getTime() for accurate comparison
       const isClickable = date.getTime() <= today.getTime();
       
+      // Check if date is within goal period for highlight effect
+      const dateTimestamp = date.getTime();
+      const isInGoalPeriod = dateTimestamp >= startTimestamp && dateTimestamp <= endTimestamp;
+      
+      const level = activityData[index];
+      const baseColor = getBackgroundColor(level);
+      
       days.push(
-        <div key={index} className="flex flex-col items-center justify-center">
+        <div key={index} className="flex flex-col items-center justify-center relative">
           <div 
-            className={`w-10 h-10 rounded-full flex items-center justify-center ${getColorClass(index)} transition-all ${isClickable ? 'hover:scale-110 cursor-pointer' : 'cursor-default'}`}
+            className={`w-10 h-10 rounded-full flex items-center justify-center ${getColorClass(index)} transition-all relative ${isClickable ? 'hover:scale-110 cursor-pointer' : 'cursor-default'}`}
+            style={{
+              ...(isInGoalPeriod && {
+                // Clean, subtle highlight with soft border and gentle shadow
+                border: '2px solid rgba(99, 102, 241, 0.4)',
+                boxShadow: '0 0 0 1px rgba(99, 102, 241, 0.2), inset 0 0 0 1px rgba(99, 102, 241, 0.1)'
+              })
+            }}
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -766,9 +827,29 @@ function AnalyticsPage({ transactions = [], onDateClick }) {
       {/* Activity Section */}
       <div className="bg-white rounded-lg p-6 -mx-6 mb-6">
         <div className="flex justify-between items-center mb-6">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={handlePreviousMonth}
+              className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition-colors"
+              aria-label="Previous month"
+            >
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 4L6 10L12 16" stroke="black" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </button>
           <div>
-            <h2 className="text-2xl font-bold text-black">{currentMonthLabel}</h2>
-            <p className="text-sm text-gray-600 mt-1">Daily Goal: ${dailyGoal}</p>
+              <h2 className="text-2xl font-bold text-black">{currentMonthLabel}</h2>
+              <p className="text-sm text-gray-600 mt-1">Daily Goal: ${dailyGoal}</p>
+            </div>
+            <button
+              onClick={handleNextMonth}
+              className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition-colors"
+              aria-label="Next month"
+            >
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M8 4L14 10L8 16" stroke="black" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </button>
           </div>
         </div>
         
