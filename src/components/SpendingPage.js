@@ -11,12 +11,14 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [editingTransaction, setEditingTransaction] = useState(null); // Transaction being edited
   const [transactionType, setTransactionType] = useState('expense');
   const [description, setDescription] = useState('');
   const [amount, setAmount] = useState('');
   const [notes, setNotes] = useState('');
   const [category, setCategory] = useState('shopping');
   const [mood, setMood] = useState(null);
+  const [transactionDate, setTransactionDate] = useState(''); // Date in YYYY-MM-DD format for input
   const [summaryPeriod, setSummaryPeriod] = useState('day');
   const [showSummaryMenu, setShowSummaryMenu] = useState(false);
   const summaryMenuRef = useRef(null);
@@ -233,15 +235,153 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
     }
   }, [showModal]);
 
+  // Helper function to parse date string (e.g., "Nov 9" or "11/09") to YYYY-MM-DD
+  const parseDateToInputFormat = (dateStr) => {
+    if (!dateStr) {
+      const today = new Date();
+      return today.toISOString().split('T')[0]; // YYYY-MM-DD
+    }
+    
+    try {
+      // Try parsing "Nov 9" format
+      const today = new Date();
+      const currentYear = today.getFullYear();
+      const parsedDate = new Date(`${dateStr} ${currentYear}`);
+      
+      if (!isNaN(parsedDate.getTime())) {
+        return parsedDate.toISOString().split('T')[0];
+      }
+      
+      // Try parsing "MM/DD" format
+      if (dateStr.includes('/')) {
+        const [month, day] = dateStr.split('/');
+        const parsedDate2 = new Date(currentYear, parseInt(month) - 1, parseInt(day));
+        if (!isNaN(parsedDate2.getTime())) {
+          return parsedDate2.toISOString().split('T')[0];
+        }
+      }
+    } catch (e) {
+      console.error('Error parsing date:', e);
+    }
+    
+    // Fallback to today
+    const today = new Date();
+    return today.toISOString().split('T')[0];
+  };
+
+  // Helper function to convert YYYY-MM-DD to "Nov 9" format
+  const formatDateToDisplay = (dateStr) => {
+    if (!dateStr) {
+      const now = new Date();
+      return now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+    
+    try {
+      const date = new Date(dateStr);
+      if (!isNaN(date.getTime())) {
+        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      }
+    } catch (e) {
+      console.error('Error formatting date:', e);
+    }
+    
+    const now = new Date();
+    return now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  const handleEditTransaction = (transaction) => {
+    setEditingTransaction(transaction);
+    setTransactionType(transaction.type);
+    setDescription(transaction.description);
+    setAmount(Math.abs(transaction.amount).toString());
+    setNotes(transaction.notes || '');
+    setCategory(transaction.category || 'shopping');
+    setMood(transaction.mood || null);
+    setTransactionDate(parseDateToInputFormat(transaction.date));
+    setShowModal(true);
+  };
+
   const handleAddTransaction = async () => {
     if (!description.trim() || !amount.trim() || parseFloat(amount) <= 0) return;
     
+    // Format date for storage
+    const formattedDate = transactionDate ? formatDateToDisplay(transactionDate) : (() => {
+      const now = new Date();
+      return now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    })();
+    
+    // Get time - use existing time if editing, otherwise use current time
+    const transactionTime = editingTransaction && editingTransaction.time 
+      ? editingTransaction.time 
+      : (() => {
+          const now = new Date();
+          return now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+        })();
+    
+    if (editingTransaction) {
+      // Update existing transaction
+      const updatedTransaction = {
+        ...editingTransaction,
+        date: formattedDate,
+        time: transactionTime,
+        description: description.trim(),
+        amount: transactionType === 'income' ? parseFloat(amount) : -parseFloat(amount),
+        type: transactionType,
+        category: transactionType === 'income' ? 'income' : category,
+        mood: transactionType === 'expense' ? mood : null,
+        notes: notes.trim() || null
+      };
+      
+      // Update in Supabase if logged in
+      if (user && editingTransaction.id) {
+        try {
+          const { error } = await supabase
+            .from('transactions')
+            .update({
+              date: formattedDate,
+              time: transactionTime,
+              description: updatedTransaction.description,
+              amount: Math.abs(updatedTransaction.amount),
+              type: updatedTransaction.type,
+              category: updatedTransaction.category,
+              mood: updatedTransaction.mood,
+              notes: updatedTransaction.notes
+            })
+            .eq('id', editingTransaction.id)
+            .eq('user_id', user.id);
+          
+          if (error) throw error;
+        } catch (error) {
+          console.error('Error updating transaction in Supabase:', error);
+        }
+      }
+      
+      // Update local state
+      setTransactions(transactions.map(t => 
+        t.id === editingTransaction.id ? updatedTransaction : t
+      ));
+      
+      setShowModal(false);
+      setEditingTransaction(null);
+      setDescription('');
+      setAmount('');
+      setNotes('');
+      setTransactionDate('');
+      setCategory(expenseCategories[0] || 'shopping');
+      setMood(null);
+      return;
+    }
+    
+    // Add new transaction
     const now = new Date();
     const newTransaction = {
       id: Date.now(),
-      date: now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-      time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
-      dayOfWeek: now.toLocaleDateString('en-US', { weekday: 'short' }),
+      date: formattedDate,
+      time: transactionTime,
+      dayOfWeek: (() => {
+        const selectedDate = transactionDate ? new Date(transactionDate) : now;
+        return selectedDate.toLocaleDateString('en-US', { weekday: 'short' });
+      })(),
       description: description.trim(),
       amount: transactionType === 'income' ? parseFloat(amount) : -parseFloat(amount),
       type: transactionType,
@@ -256,6 +396,7 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
     setDescription('');
     setAmount('');
     setNotes('');
+    setTransactionDate('');
     setCategory(expenseCategories[0] || 'shopping');
     setMood(null);
   };
@@ -595,6 +736,8 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
             }}
             onClick={() => {
               setTransactionType('income');
+              const today = new Date();
+              setTransactionDate(today.toISOString().split('T')[0]);
               setShowModal(true);
             }}
           >
@@ -615,6 +758,8 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
             }}
             onClick={() => {
               setTransactionType('expense');
+                const today = new Date();
+                setTransactionDate(today.toISOString().split('T')[0]);
               setShowModal(true);
             }}
           >
@@ -639,23 +784,33 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
                   position: 'relative'
                 }}
               >
-                {/* Delete button - center right */}
+                {/* Edit and Delete buttons - center right */}
+                <div className="absolute right-3 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2" style={{ top: 'calc(50% + 12px)' }}>
+                  <button
+                    onClick={() => handleEditTransaction(transaction)}
+                    className="p-1 text-gray-400 hover:text-blue-500"
+                    title="Edit"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+                    </svg>
+                  </button>
                 <button
-                  onClick={() => {
-                    if (onDeleteTransaction) {
-                      onDeleteTransaction(transaction.id);
-                    } else {
-                      setTransactions(transactions.filter(t => t.id !== transaction.id));
-                    }
-                  }}
-                  className="absolute right-3 opacity-0 group-hover:opacity-100 transition-opacity p-1 text-gray-400 hover:text-red-500"
-                  style={{ top: '50%', transform: 'translateY(-50%)' }}
+                    onClick={() => {
+                      if (onDeleteTransaction) {
+                        onDeleteTransaction(transaction.id);
+                      } else {
+                        setTransactions(transactions.filter(t => t.id !== transaction.id));
+                      }
+                    }}
+                    className="p-1 text-gray-400 hover:text-red-500"
                   title="Delete"
                 >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
                   </svg>
                 </button>
+              </div>
 
                 <div className="flex justify-between items-start">
                   {/* Left: Title and Category */}
@@ -684,8 +839,8 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
                       {transaction.time || '00:00'} {transaction.date || 'Jan 1'}
                     </p>
                   </div>
-                </div>
               </div>
+            </div>
             ))
           )}
         </div>
@@ -696,12 +851,55 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
         <>
           <div 
             className="absolute inset-0 bg-black bg-opacity-50 z-[100]"
-            onClick={() => setShowModal(false)}
+                  onClick={() => {
+                    setShowModal(false);
+                    setEditingTransaction(null);
+                    setDescription('');
+                    setAmount('');
+                    setNotes('');
+                    setTransactionDate('');
+                    setCategory(expenseCategories[0] || 'shopping');
+                    setMood(null);
+                    setTransactionType('expense');
+                  }}
             style={{ top: 0, left: 0, right: 0, bottom: 0 }}
           ></div>
           <div className="absolute bottom-0 left-0 right-0 bg-white rounded-t-lg p-6 z-[101]">
-            <h3 className="text-xl font-medium text-black mb-4">Add {transactionType === 'income' ? 'Income' : 'Expense'}</h3>
+            <h3 className="text-xl font-medium text-black mb-4">
+              {editingTransaction ? 'Edit' : 'Add'} Transaction
+            </h3>
             <div className="space-y-4">
+              {/* Income/Expense Type Selection */}
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                <button
+                  onClick={() => setTransactionType('income')}
+                  className={`py-3 rounded-lg font-medium text-sm transition ${
+                    transactionType === 'income'
+                      ? 'bg-black text-white'
+                      : 'bg-gray-100 text-black hover:bg-gray-200'
+                  }`}
+                >
+                  Income
+                </button>
+                <button
+                  onClick={() => setTransactionType('expense')}
+                  className={`py-3 rounded-lg font-medium text-sm transition ${
+                    transactionType === 'expense'
+                      ? 'bg-black text-white'
+                      : 'bg-gray-100 text-black hover:bg-gray-200'
+                  }`}
+                >
+                  Expense
+                </button>
+              </div>
+              <div>
+                <input
+                  type="date"
+                  value={transactionDate || new Date().toISOString().split('T')[0]}
+                  onChange={(e) => setTransactionDate(e.target.value)}
+                  className="w-full bg-gray-100 rounded-lg px-4 py-4 text-black placeholder-gray-400 border-none outline-none text-base"
+                />
+              </div>
               <div>
                 <input
                   type="text"
@@ -814,7 +1012,17 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
               )}
               <div className="flex gap-3">
                 <button
-                  onClick={() => setShowModal(false)}
+                  onClick={() => {
+                    setShowModal(false);
+                    setEditingTransaction(null);
+                    setDescription('');
+                    setAmount('');
+                    setNotes('');
+                    setTransactionDate('');
+                    setCategory(expenseCategories[0] || 'shopping');
+                    setMood(null);
+                    setTransactionType('expense');
+                  }}
                   className="flex-1 bg-gray-200 text-black py-4 rounded-lg font-medium text-base"
                 >
                   Cancel
@@ -824,7 +1032,7 @@ function SpendingPage({ transactions, setTransactions, onDeleteTransaction }) {
                   disabled={!description.trim() || !amount.trim() || parseFloat(amount) <= 0}
                   className="flex-1 bg-black text-white py-4 rounded-lg font-medium text-base disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Add
+                  {editingTransaction ? 'Save' : 'Add'}
                 </button>
               </div>
             </div>

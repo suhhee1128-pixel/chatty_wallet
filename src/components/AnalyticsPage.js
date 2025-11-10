@@ -18,6 +18,8 @@ function AnalyticsPage({ transactions = [], onDateClick }) {
   });
   const [startDateInput, setStartDateInput] = useState('');
   const [analyticsTab, setAnalyticsTab] = useState('monthly');
+  const [selectedMood, setSelectedMood] = useState(null);
+  const [showMoodModal, setShowMoodModal] = useState(false);
   
   // State for calendar month navigation
   const todayDate = new Date();
@@ -629,7 +631,7 @@ function AnalyticsPage({ transactions = [], onDateClick }) {
             <select
               value={selectedYear}
               onChange={(e) => setSelectedYear(parseInt(e.target.value, 10))}
-              className="bg-black text-white rounded-full text-sm font-medium px-4 py-2 focus:outline-none"
+              className="bg-transparent text-black rounded-full text-sm font-medium px-4 py-2 focus:outline-none border-none"
             >
               {yearsAvailable.map((year) => (
                 <option key={year} value={year}>
@@ -640,7 +642,7 @@ function AnalyticsPage({ transactions = [], onDateClick }) {
             <select
               value={0}
               onChange={() => {}}
-              className="bg-black text-white rounded-full text-sm font-medium px-4 py-2 focus:outline-none opacity-60 cursor-not-allowed"
+              className="bg-transparent text-black rounded-full text-sm font-medium px-4 py-2 focus:outline-none border-none opacity-60 cursor-not-allowed"
               disabled
             >
               <option value={0}>No months available</option>
@@ -658,50 +660,165 @@ function AnalyticsPage({ transactions = [], onDateClick }) {
       : monthOptions[0];
     const selectedEntry = getMonthlyEntry(selectedYear, safeMonthIndex);
     const selectedTotal = selectedEntry.total ?? 0;
-    const progressPercent = maxMonthlyTotal > 0 ? Math.round((selectedTotal / maxMonthlyTotal) * 100) : 0;
+
+    // Get expenses for selected month
+    const selectedMonthExpenses = expenses.filter(expense => {
+      try {
+        const expenseDate = parseExpenseDate(expense.date);
+        if (!expenseDate) return false;
+        return expenseDate.getMonth() === safeMonthIndex && expenseDate.getFullYear() === selectedYear;
+      } catch (e) {
+        return false;
+      }
+    });
+
+    // Group by category
+    const categoryTotals = {};
+    selectedMonthExpenses.forEach(expense => {
+      const category = expense.category || 'other';
+      if (!categoryTotals[category]) {
+        categoryTotals[category] = 0;
+      }
+      categoryTotals[category] += Math.abs(expense.amount);
+    });
+
+    // Sort categories by amount (descending)
+    const sortedCategories = Object.entries(categoryTotals)
+      .map(([category, amount]) => ({
+        category,
+        amount,
+        percentage: selectedTotal > 0 ? (amount / selectedTotal) * 100 : 0
+      }))
+      .sort((a, b) => b.amount - a.amount);
+
+    // Colors for pie chart
+    const categoryColors = {
+      shopping: '#FFB5E8',
+      food: '#B5E8B5',
+      transport: '#B5D4FF',
+      entertainment: '#FFE8B5',
+      other: '#E5E7EB'
+    };
+
+    // Generate pie chart SVG
+    const pieSize = 200;
+    const radius = pieSize / 2 - 10;
+    const centerX = pieSize / 2;
+    const centerY = pieSize / 2;
+    let currentAngle = -90; // Start from top
+
+    const pieSlices = sortedCategories.map((item, index) => {
+      const angle = (item.percentage / 100) * 360;
+      const startAngle = currentAngle;
+      const endAngle = currentAngle + angle;
+      
+      const x1 = centerX + radius * Math.cos((startAngle * Math.PI) / 180);
+      const y1 = centerY + radius * Math.sin((startAngle * Math.PI) / 180);
+      const x2 = centerX + radius * Math.cos((endAngle * Math.PI) / 180);
+      const y2 = centerY + radius * Math.sin((endAngle * Math.PI) / 180);
+      
+      const largeArcFlag = angle > 180 ? 1 : 0;
+      
+      const pathData = [
+        `M ${centerX} ${centerY}`,
+        `L ${x1} ${y1}`,
+        `A ${radius} ${radius} 0 ${largeArcFlag} 1 ${x2} ${y2}`,
+        'Z'
+      ].join(' ');
+
+      currentAngle += angle;
+
+      return {
+        ...item,
+        path: pathData,
+        color: categoryColors[item.category] || categoryColors.other
+      };
+    });
 
     return (
       <div className="space-y-4">
-        <div className="flex items-center justify-end gap-2">
-          <select
-            value={selectedYear}
-            onChange={(e) => setSelectedYear(parseInt(e.target.value, 10))}
-            className="bg-black text-white rounded-full text-sm font-medium px-4 py-2 focus:outline-none"
-          >
-            {yearsAvailable.map((year) => (
-              <option key={year} value={year}>
-                {year}
-              </option>
-            ))}
-          </select>
-          <select
-            value={safeMonthIndex}
-            onChange={(e) => setSelectedMonthIndex(parseInt(e.target.value, 10))}
-            className="bg-black text-white rounded-full text-sm font-medium px-4 py-2 focus:outline-none"
-          >
-            {monthOptions.map((idx) => (
-              <option key={idx} value={idx}>
-                {new Date(selectedYear, idx, 1).toLocaleString('en-US', { month: 'long' })}
-              </option>
-            ))}
-          </select>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <select
+              value={selectedYear}
+              onChange={(e) => setSelectedYear(parseInt(e.target.value, 10))}
+              className="bg-transparent text-black rounded-full text-sm font-medium px-4 py-2 focus:outline-none border-none"
+            >
+              {yearsAvailable.map((year) => (
+                <option key={year} value={year}>
+                  {year}
+                </option>
+              ))}
+            </select>
+            <select
+              value={safeMonthIndex}
+              onChange={(e) => setSelectedMonthIndex(parseInt(e.target.value, 10))}
+              className="bg-transparent text-black rounded-full text-sm font-medium px-4 py-2 focus:outline-none border-none"
+            >
+              {monthOptions.map((idx) => (
+                <option key={idx} value={idx}>
+                  {new Date(selectedYear, idx, 1).toLocaleString('en-US', { month: 'long' })}
+                </option>
+              ))}
+            </select>
+            <span className="text-lg font-bold text-black ml-2">
+              ${formatCurrency(selectedTotal)}
+            </span>
+          </div>
         </div>
 
-        <div className="bg-gray-50 rounded-2xl p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <p className="text-lg font-semibold text-black">{selectedEntry.label}</p>
-            <p className="text-lg font-bold text-black">${formatCurrency(selectedTotal)}</p>
+        {selectedTotal > 0 ? (
+          <>
+            {/* Pie Chart */}
+            <div className="flex justify-center mb-6">
+              <svg width={pieSize} height={pieSize} viewBox={`0 0 ${pieSize} ${pieSize}`}>
+                {pieSlices.map((slice, index) => (
+                  <path
+                    key={index}
+                    d={slice.path}
+                    fill={slice.color}
+                    stroke="#ffffff"
+                    strokeWidth="2"
+                  />
+                ))}
+              </svg>
+            </div>
+
+            {/* Category List */}
+            <div className="space-y-2">
+              {sortedCategories.map((item, index) => (
+                <div
+                  key={item.category}
+                  className="flex items-center justify-between bg-gray-50 rounded-lg p-3"
+                >
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="w-4 h-4 rounded-full"
+                      style={{ backgroundColor: categoryColors[item.category] || categoryColors.other }}
+                    ></div>
+                    <span className="text-sm font-medium text-black capitalize">
+                      {item.category}
+                    </span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-sm font-bold text-black">
+                      ${formatCurrency(item.amount)}
+                    </span>
+                    <span className="text-xs text-gray-500 ml-2">
+                      ({item.percentage.toFixed(1)}%)
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <div className="bg-gray-50 rounded-lg p-6 text-center">
+            <p className="text-sm text-gray-500">
+              No spending recorded for this month yet.
+            </p>
           </div>
-          <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
-            <div
-              className="h-2 rounded-full bg-black transition-all"
-              style={{ width: `${progressPercent}%` }}
-            ></div>
-          </div>
-          <p className="text-xs text-gray-500">
-            {selectedTotal > 0 ? 'Total spending recorded for this month.' : 'No spending recorded for this month yet.'}
-          </p>
-        </div>
+        )}
       </div>
     );
   };
@@ -732,7 +849,14 @@ function AnalyticsPage({ transactions = [], onDateClick }) {
           const amountPercentage = totalMoodExpenses > 0 ? Math.round((stats.total / totalMoodExpenses) * 100) : 0;
 
           return (
-            <div key={moodKey} className="bg-gray-50 rounded-lg p-4">
+            <div 
+              key={moodKey} 
+              className="bg-gray-50 rounded-lg p-4 cursor-pointer hover:bg-gray-100 transition-colors"
+              onClick={() => {
+                setSelectedMood(moodKey);
+                setShowMoodModal(true);
+              }}
+            >
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
                   <span className="text-3xl">{stats.emoji}</span>
@@ -1006,6 +1130,82 @@ function AnalyticsPage({ transactions = [], onDateClick }) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Mood Details Modal */}
+      {showMoodModal && selectedMood && (
+        <>
+          <div 
+            className="absolute inset-0 bg-black bg-opacity-50 z-[100]"
+            onClick={() => {
+              setShowMoodModal(false);
+              setSelectedMood(null);
+            }}
+            style={{ top: 0, left: 0, right: 0, bottom: 0 }}
+          ></div>
+          <div className="absolute bottom-0 left-0 right-0 bg-white rounded-t-lg p-4 z-[101] max-h-[85vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold text-black capitalize">
+                {selectedMood === 'happy' ? '🙂' : selectedMood === 'neutral' ? '😐' : '🫠'} {selectedMood} Expenses
+              </h3>
+              <button
+                onClick={() => {
+                  setShowMoodModal(false);
+                  setSelectedMood(null);
+                }}
+                className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center hover:bg-gray-200 transition-colors flex-shrink-0"
+              >
+                <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M15 5L5 15M5 5L15 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            </div>
+            
+            <div className="space-y-3 pb-4">
+              {expenses
+                .filter(t => t.mood === selectedMood)
+                .map((transaction) => (
+                  <div
+                    key={transaction.id}
+                    className="bg-gray-50 rounded-lg p-3"
+                  >
+                    <div className="flex justify-between items-start gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <h4 className="text-sm font-semibold text-black break-words">{transaction.description}</h4>
+                          <span className="text-base flex-shrink-0">
+                            {selectedMood === 'happy' ? '🙂' : selectedMood === 'neutral' ? '😐' : '🫠'}
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-500 mb-1">
+                          {String(transaction.category).charAt(0).toUpperCase() + String(transaction.category).slice(1)}
+                        </p>
+                        {transaction.notes && (
+                          <p className="text-xs text-gray-400 mt-1 italic break-words">
+                            {transaction.notes}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex flex-col items-end flex-shrink-0">
+                        <p className="text-sm font-bold text-black mb-1">
+                          ${Math.abs(transaction.amount).toFixed(2)}
+                        </p>
+                        <p className="text-xs text-gray-400">
+                          {transaction.time || '00:00'} {transaction.date || 'Jan 1'}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              
+              {expenses.filter(t => t.mood === selectedMood).length === 0 && (
+                <p className="text-sm text-gray-500 text-center py-8">
+                  No expenses found for this mood.
+                </p>
+              )}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
